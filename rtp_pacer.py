@@ -13,6 +13,13 @@ from opus_demuxer import OpusDemuxer
 OPUS_SILENCE_FRAME = b'\xf8\xff\xfe'
 SAMPLES_PER_FRAME = 960  # 20ms @ 48000 Hz
 FRAME_DURATION_SEC = 0.020  # 20ms
+TIME_BASE_48K = Fraction(1, 48000)
+
+def _create_silence_packet(pts: int) -> av.Packet:
+    p = av.Packet(OPUS_SILENCE_FRAME)
+    p.pts = pts
+    p.time_base = TIME_BASE_48K
+    return p
 
 class RawOpusTrack(MediaStreamTrack):
     """
@@ -252,9 +259,10 @@ class RawOpusTrack(MediaStreamTrack):
 
         now_ts = time.monotonic()
         self._sliding_bytes.append((now_ts, pkt_len))
-        cutoff = now_ts - 3.0
-        while self._sliding_bytes and self._sliding_bytes[0][0] < cutoff:
-            self._sliding_bytes.popleft()
+        if len(self._sliding_bytes) > 200:
+            cutoff = now_ts - 3.0
+            while self._sliding_bytes and self._sliding_bytes[0][0] < cutoff:
+                self._sliding_bytes.popleft()
 
     async def recv(self) -> av.Packet:
         # Pacing kontrol jam real-time (20ms per frame)
@@ -278,9 +286,7 @@ class RawOpusTrack(MediaStreamTrack):
 
         # Jika dalam kondisi Pause atau Playlist kosong
         if not self.is_playing or not self.demuxer:
-            p = av.Packet(OPUS_SILENCE_FRAME)
-            p.pts = self._pts
-            p.time_base = Fraction(1, 48000)
+            p = _create_silence_packet(self._pts)
             self._record_packet_stats(p, is_silence=True)
             self._notify_packet_listeners(OPUS_SILENCE_FRAME, SAMPLES_PER_FRAME)
             return p
@@ -297,9 +303,7 @@ class RawOpusTrack(MediaStreamTrack):
 
         # Jika masih tidak ada paket (misal error membaca file), kirim hening
         if packet is None:
-            p = av.Packet(OPUS_SILENCE_FRAME)
-            p.pts = self._pts
-            p.time_base = Fraction(1, 48000)
+            p = _create_silence_packet(self._pts)
             self._record_packet_stats(p, is_silence=True)
             self._notify_packet_listeners(OPUS_SILENCE_FRAME, SAMPLES_PER_FRAME)
             return p
@@ -309,16 +313,14 @@ class RawOpusTrack(MediaStreamTrack):
 
         # Jika MUTE aktif: ganti paket suara lagu dengan hening (posisi lagu tetap maju)
         if self.is_muted:
-            p = av.Packet(OPUS_SILENCE_FRAME)
-            p.pts = self._pts
-            p.time_base = Fraction(1, 48000)
+            p = _create_silence_packet(self._pts)
             self._record_packet_stats(p, is_silence=True)
             self._notify_packet_listeners(OPUS_SILENCE_FRAME, SAMPLES_PER_FRAME)
             return p
 
         # Atur timestamp linier pada paket asli dari file
         packet.pts = self._pts
-        packet.time_base = Fraction(1, 48000)
+        packet.time_base = TIME_BASE_48K
         self._record_packet_stats(packet, is_silence=False)
         self._notify_packet_listeners(bytes(packet), SAMPLES_PER_FRAME)
         return packet

@@ -26,6 +26,9 @@ def is_tunnel_connected(tunnel_id_or_name: str = TUNNEL_ID) -> bool:
 
 def ensure_cloudflared_running() -> bool:
     global _cloudflared_proc
+    if _cloudflared_proc is not None and _cloudflared_proc.poll() is None:
+        return True
+
     if is_tunnel_connected():
         print("[ServiceManager] Cloudflared Tunnel radio-tunnel sudah AKTIF & terhubung ke Cloudflare Edge!")
         return True

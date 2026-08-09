@@ -9,6 +9,8 @@ dependencies = [
     "av>=17.1.0",
     "aiohttp>=3.14.3",
     "prompt-toolkit>=3.0.53",
+    "PySide6>=6.6.0",
+    "qasync>=0.28.0",
 ]
 
 [tool.hatch.build.targets.wheel]

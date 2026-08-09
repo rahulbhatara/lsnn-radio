@@ -4,14 +4,17 @@ import glob
 import random
 import asyncio
 import argparse
+import ctypes
+
+import qasync
+from PySide6.QtWidgets import QApplication
 
 from rtp_pacer import RawOpusTrack
 from whip_client import WHIPClient
 from hls_streamer import HLSStreamer
 from cli_controller import CLIController
+from gui_app import MainWindow
 from service_manager import check_and_start_all_services, stop_all_services
-
-import ctypes
 
 DEFAULT_WHIP_URL = "https://cn1.meshcast.io/whip/lsnn_radio"
 DEFAULT_PUBLIC_HLS_URL = "https://radio.samf.fun/live.m3u8"
@@ -33,21 +36,13 @@ def get_opus_playlist(music_dir: str, shuffle: bool = True) -> list[str]:
     pattern = os.path.join(music_dir, "*.opus")
     playlist = sorted(glob.glob(pattern))
     if shuffle and playlist:
-        # Gunakan SystemRandom untuk entropi tinggi dari sistem operasi (1x shuffle sudah acak sempurna)
         rng = random.SystemRandom()
         rng.shuffle(playlist)
     return playlist
 
-async def main():
+async def main_async(args, app):
     set_win_high_precision_timer(True)
     try:
-        parser = argparse.ArgumentParser(description="Raw Opus Dual Streamer (MeshCast WHIP & HLS Cloudflare CDN)")
-        parser.add_argument("--url", default=DEFAULT_WHIP_URL, help="Target URL endpoint WHIP")
-        parser.add_argument("--dir", default="..", help="Direktori lagu (.opus), default ke folder induk (..)")
-        parser.add_argument("--public-url", default=DEFAULT_PUBLIC_HLS_URL, help="URL Publik HLS Cloudflare CDN")
-        parser.add_argument("--hls-port", type=int, default=8000, help="Port lokal HTTP server HLS (default: 8000)")
-        args = parser.parse_args()
-
         music_dir = os.path.abspath(args.dir)
         playlist = get_opus_playlist(music_dir)
 
@@ -78,14 +73,20 @@ async def main():
         track.add_packet_listener(hls_streamer.enqueue_opus_frame)
 
         try:
-            # Koneksi ke Meshcast WHIP & Memulai HLS Streamer secara simultan
             print("[Main] Menghubungkan Dual Stream (MeshCast & HLS CDN)...")
             await whip_client.connect()
             await hls_streamer.start()
-            
-            # Jalankan Pengontrol CLI Interaktif Dual Stream
-            cli = CLIController(track, whip_client, hls_streamer, music_dir)
-            await cli.run()
+
+            if args.tui or app is None:
+                cli = CLIController(track, whip_client, hls_streamer, music_dir)
+                await cli.run()
+            else:
+                window = MainWindow(track, whip_client, hls_streamer, music_dir)
+                window.show()
+                
+                app_close_event = asyncio.Event()
+                window.closed_signal.connect(app_close_event.set)
+                await app_close_event.wait()
 
         except Exception as e:
             print(f"\n[Error Utama] {e}")
@@ -95,16 +96,40 @@ async def main():
             await whip_client.close()
             await hls_streamer.stop()
             stop_all_services()
+            if app:
+                app.quit()
             print("[Main] Selesai.")
     finally:
         set_win_high_precision_timer(False)
 
+def main():
+    parser = argparse.ArgumentParser(description="Raw Opus Dual Streamer (MeshCast WHIP & HLS Cloudflare CDN)")
+    parser.add_argument("--url", default=DEFAULT_WHIP_URL, help="Target URL endpoint WHIP")
+    parser.add_argument("--dir", default="..", help="Direktori lagu (.opus), default ke folder induk (..)")
+    parser.add_argument("--public-url", default=DEFAULT_PUBLIC_HLS_URL, help="URL Publik HLS Cloudflare CDN")
+    parser.add_argument("--hls-port", type=int, default=8000, help="Port lokal HTTP server HLS (default: 8000)")
+    parser.add_argument("--tui", action="store_true", help="Jalankan dalam mode Terminal UI (TUI) tanpa GUI")
+    args = parser.parse_args()
+
+    if not args.tui:
+        app = QApplication(sys.argv)
+        app.setQuitOnLastWindowClosed(False)
+        loop = qasync.QEventLoop(app)
+        asyncio.set_event_loop(loop)
+    else:
+        app = None
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+    try:
+        with loop:
+            loop.run_until_complete(main_async(args, app))
+    except (RuntimeError, KeyboardInterrupt):
+        pass
+
 if __name__ == "__main__":
     try:
-        asyncio.run(main())
+        main()
     except KeyboardInterrupt:
         print("\nDihentikan oleh pengguna.")
         stop_all_services()
-
-
-

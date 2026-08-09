@@ -30,7 +30,7 @@ class HLSStreamer:
         self.audio_stream = None
         self._pts = 0
 
-        self.packet_queue = asyncio.Queue(maxsize=300)
+        self.packet_queue: Optional[asyncio.Queue] = None
         self.mux_task: Optional[asyncio.Task] = None
         self.runner: Optional[web.AppRunner] = None
         self.site: Optional[web.TCPSite] = None
@@ -42,6 +42,8 @@ class HLSStreamer:
         self.total_bytes_served = 0
         self.http_requests_count = 0
         self._sliding_bytes = deque()  # (timestamp, byte_len)
+        self._m3u8_cache: Optional[str] = None
+        self._m3u8_mtime: float = 0.0
 
     def _prepare_output_dir(self):
         if os.path.exists(self.output_dir):
@@ -73,6 +75,7 @@ class HLSStreamer:
         print(f"[HLS] Memulai HLS Segmenter Engine & HTTP Server di http://{self.host}:{self.port} ...")
         try:
             self._init_pyav_hls()
+            self.packet_queue = asyncio.Queue(maxsize=300)
             
             # Setup aiohttp web server
             app = web.Application()
@@ -97,7 +100,7 @@ class HLSStreamer:
             return False
 
     def enqueue_opus_frame(self, raw_opus_bytes: bytes, samples: int = 960):
-        if not self.is_running:
+        if not self.is_running or self.packet_queue is None:
             return
         try:
             self.packet_queue.put_nowait((raw_opus_bytes, samples))
@@ -135,9 +138,13 @@ class HLSStreamer:
             return web.Response(status=404, text="Playlist belum siap.")
         
         try:
-            with open(self.m3u8_file, "r", encoding="utf-8") as f:
-                content = f.read()
+            current_mtime = os.path.getmtime(self.m3u8_file)
+            if self._m3u8_cache is None or current_mtime > self._m3u8_mtime:
+                with open(self.m3u8_file, "r", encoding="utf-8") as f:
+                    self._m3u8_cache = f.read()
+                self._m3u8_mtime = current_mtime
 
+            content = self._m3u8_cache
             self.total_bytes_served += len(content)
             now = time.monotonic()
             self._sliding_bytes.append((now, len(content)))
