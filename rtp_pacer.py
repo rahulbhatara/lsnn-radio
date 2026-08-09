@@ -1,4 +1,5 @@
 import os
+import glob
 import time
 import random
 import asyncio
@@ -42,11 +43,23 @@ class RawOpusTrack(MediaStreamTrack):
         self.track_frames_played = 0
         self._sliding_bytes = deque()  # deque of (timestamp, byte_len)
         self._pacing_drifts = deque(maxlen=50)  # deque drift in ms dengan maxlen otomatis
+        self._packet_listeners = []
 
         if self.playlist:
             # Lakukan pengacakan tingkat tinggi saat awal inisialisasi track
             self.reshuffle_playlist_loop(avoid_repeat_track=None)
             self._load_demuxer()
+
+    def add_packet_listener(self, callback):
+        if callback not in self._packet_listeners:
+            self._packet_listeners.append(callback)
+
+    def _notify_packet_listeners(self, raw_bytes: bytes, samples: int = SAMPLES_PER_FRAME):
+        for cb in self._packet_listeners:
+            try:
+                cb(raw_bytes, samples)
+            except Exception:
+                pass
 
     def reshuffle_playlist_loop(self, avoid_repeat_track: str = None):
         """
@@ -82,7 +95,37 @@ class RawOpusTrack(MediaStreamTrack):
         if current_track and current_track in self.playlist:
             self.current_index = self.playlist.index(current_track)
 
+    def refresh_playlist(self, music_dir: str) -> tuple[int, int]:
+        """
+        Pindai ulang direktori lagu dan perbarui playlist tanpa memutus lagu yang sedang diputar.
+        Mengembalikan tuple (jumlah_lagu_baru, total_lagu_sekarang).
+        """
+        pattern = os.path.join(music_dir, "*.opus")
+        files = sorted(glob.glob(pattern))
+        
+        current_track = self.playlist[self.current_index] if (self.playlist and 0 <= self.current_index < len(self.playlist)) else None
+        
+        existing_set = set(os.path.abspath(f) for f in self.playlist)
+        new_files = [f for f in files if os.path.abspath(f) not in existing_set]
+        
+        valid_files_set = set(os.path.abspath(f) for f in files)
+        updated_playlist = [f for f in self.playlist if os.path.abspath(f) in valid_files_set]
+        
+        if new_files:
+            updated_playlist.extend(new_files)
+
+        self.playlist = updated_playlist
+
+        if current_track and current_track in self.playlist:
+            self.current_index = self.playlist.index(current_track)
+        elif self.playlist:
+            self.current_index = min(self.current_index, len(self.playlist) - 1)
+            self._load_demuxer()
+            
+        return len(new_files), len(self.playlist)
+
     def _load_demuxer(self):
+
         self.track_frames_played = 0
         if self.demuxer:
             self.demuxer.close()
@@ -239,6 +282,7 @@ class RawOpusTrack(MediaStreamTrack):
             p.pts = self._pts
             p.time_base = Fraction(1, 48000)
             self._record_packet_stats(p, is_silence=True)
+            self._notify_packet_listeners(OPUS_SILENCE_FRAME, SAMPLES_PER_FRAME)
             return p
 
         # Ambil paket raw Opus dari demuxer (lagu tetap berjalan di background)
@@ -257,6 +301,7 @@ class RawOpusTrack(MediaStreamTrack):
             p.pts = self._pts
             p.time_base = Fraction(1, 48000)
             self._record_packet_stats(p, is_silence=True)
+            self._notify_packet_listeners(OPUS_SILENCE_FRAME, SAMPLES_PER_FRAME)
             return p
 
         # Lagu sedang dibaca: naikkan counter frame lagu yang diputar
@@ -268,12 +313,14 @@ class RawOpusTrack(MediaStreamTrack):
             p.pts = self._pts
             p.time_base = Fraction(1, 48000)
             self._record_packet_stats(p, is_silence=True)
+            self._notify_packet_listeners(OPUS_SILENCE_FRAME, SAMPLES_PER_FRAME)
             return p
 
         # Atur timestamp linier pada paket asli dari file
         packet.pts = self._pts
         packet.time_base = Fraction(1, 48000)
         self._record_packet_stats(packet, is_silence=False)
+        self._notify_packet_listeners(bytes(packet), SAMPLES_PER_FRAME)
         return packet
 
     def stop(self):

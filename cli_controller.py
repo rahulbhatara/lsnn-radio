@@ -40,11 +40,12 @@ def format_progress(elapsed_sec: float, duration_sec: float, bar_width: int = 15
 class CLIController:
     """
     Pengontrol terminal interaktif tanpa perlu menekan Enter (msvcrt di Windows),
-    dilengkapi fitur visualisasi statistik streaming real-time, mode switch playlist, & pengunduhan YouTube di latar belakang.
+    dilengkapi fitur visualisasi statistik dual-stream real-time, mode switch playlist, & pengunduhan YouTube di latar belakang.
     """
-    def __init__(self, track, whip_client, music_dir=".."):
+    def __init__(self, track, whip_client, icecast_client=None, music_dir=".."):
         self.track = track
         self.whip_client = whip_client
+        self.icecast_client = icecast_client
         self.music_dir = music_dir
         self.is_running = True
         self.status_message = ""
@@ -76,6 +77,8 @@ class CLIController:
             self._cached_whip_stats = await self.whip_client.get_whip_stats()
             self._last_whip_stats_time = now
         whip_stats = self._cached_whip_stats
+
+        ice_stats = self.icecast_client.get_icecast_stats() if self.icecast_client else None
         
         state_str = "▶ PLAYING" if status["is_playing"] else "⏸ PAUSED"
         mute_str = " 🔇 MUTED" if status["is_muted"] else ""
@@ -171,6 +174,7 @@ class CLIController:
                 print(" [f / /]     : Fokus / Aktifkan Search Bar")
                 print(" [l / ESC]   : Kembali ke Dashboard Utama")
                 print(" [r]         : Acak Ulang Playlist (Reshuffle)")
+                print(" [u]         : Rescan / Refresh Playlist Folder")
                 print(" [n / >]     : Lagu Berikutnya (Next)")
                 print(" [b / <]     : Lagu Sebelumnya (Previous)")
                 print(" [SPACE / p] : Pause / Resume")
@@ -181,7 +185,7 @@ class CLIController:
         else:
             # Mode Utama (Dashboard Stats & Controls)
             print("==========================================================")
-            print("      🎵 RAW OPUS WHIP STREAMER & PACER (ZERO-CPU) 🎵     ")
+            print("  📡 RAW OPUS DUAL STREAMER (MESHCAST & ICECAST2) 📡       ")
             print("==========================================================")
             print(f" Status Siaran : {state_str}{mute_str}")
             print(f" Lagu Aktif    : [{status['index']}/{status['total']}] {status['track']}")
@@ -189,20 +193,31 @@ class CLIController:
             if self.status_message:
                 print(f" Info          : {self.status_message}")
             
+            # Streaming Targets Status
+            ice_status_str = "CONNECTED 🟢" if (ice_stats and ice_stats["is_connected"]) else "OFFLINE 🔴"
+            ice_url = ice_stats["public_url"] if ice_stats else "N/A"
+            ice_bytes = format_bytes(ice_stats["total_bytes"]) if ice_stats else "0 B"
+            ice_bitrate = ice_stats["instant_bitrate_kbps"] if ice_stats else 0.0
+
             if not self.show_detailed_stats:
                 # Mode Ringkas (Compact Stats)
+                print("------------------ 📻 DUAL STREAM TARGETS ----------------")
+                print(f" 🚀 Stream #1 (MeshCast WebRTC) : State={conn_state} ({inst_bitrate:.1f} kbps)")
+                print(f" 🌐 Stream #2 (Icecast Tunnel) : {ice_status_str} ({ice_bitrate:.1f} kbps)")
+                print(f"    🔗 Public Icecast Stream   : {ice_url}")
                 print("----------------------------------------------------------")
-                print(f" ⏱️  Uptime   : {uptime_str:<12} 📊 Bitrate  : {inst_bitrate:.1f} kbps (Avg: {avg_bitrate:.1f} kbps)")
-                print(f" 📦  Payload  : {bytes_str:<12} 🌐 WebRTC   : {conn_state} (DTLS: {dtls_state})")
+                print(f" ⏱️  Uptime   : {uptime_str:<12} 📦 Total Audio : {bytes_str}")
             else:
                 # Mode Detail (Detailed Dashboard)
-                print("------------------ 📊 LIVE DASHBOARD ---------------------")
+                print("------------------ 📊 LIVE DASHBOARD DUAL STREAM ---------")
                 print(f" ⏱️  Durasi Streaming : {uptime_str}")
-                print(f" 🌐  Koneksi WebRTC   : State={conn_state} | ICE={whip_stats['ice_connection_state']} | DTLS={dtls_state}")
-                print(f" 📊  Laju Bitrate     : Instant={inst_bitrate:.1f} kbps | Average={avg_bitrate:.1f} kbps")
-                print(f" 📦  Rincian Paket    : Total={pacer_stats['total_frames']:,} | Audio={pacer_stats['audio_frames']:,} | Silence={pacer_stats['silence_frames']:,}")
-                print(f" ⚡  Rate & Drift     : {pacer_stats['instant_pps']:.1f} pps | Drift Realtime={pacer_stats['instant_drift_ms']:.2f} ms | Avg={pacer_stats['avg_drift_ms']:.2f} ms | Max={pacer_stats['max_drift_ms']:.2f} ms")
-                print(f" 💾  Data Terkirim    : {bytes_str} ({pacer_stats['total_bytes']:,} Bytes)")
+                print(f" 🚀 Stream #1 (MeshCast) : State={conn_state} | ICE={whip_stats['ice_connection_state']} | DTLS={dtls_state}")
+                print(f"    - Bitrate          : {inst_bitrate:.1f} kbps (Avg: {avg_bitrate:.1f} kbps) | Sent: {bytes_str}")
+                print(f" 🌐 Stream #2 (Icecast)  : State={ice_status_str} | Local=http://localhost:8000/lsnn_radio")
+                print(f"    - URL Publik       : {ice_url}")
+                print(f"    - Bitrate          : {ice_bitrate:.1f} kbps (Avg: {ice_stats['avg_bitrate_kbps'] if ice_stats else 0:.1f} kbps) | Sent: {ice_bytes}")
+                print(f" 📦 Paket Audio Pacer  : Total={pacer_stats['total_frames']:,} | Audio={pacer_stats['audio_frames']:,} | Silence={pacer_stats['silence_frames']:,}")
+                print(f" ⚡ Rate & Drift       : {pacer_stats['instant_pps']:.1f} pps | Drift Realtime={pacer_stats['instant_drift_ms']:.2f} ms | Avg={pacer_stats['avg_drift_ms']:.2f} ms")
 
             print("----------------------------------------------------------")
             print(" [SPACE / p] : Pause / Resume")
@@ -348,6 +363,13 @@ class CLIController:
                                 self.track.reshuffle_remaining()
                                 self.status_message = "🔀 Sisa playlist berhasil diacak ulang!"
                                 key_pressed = True
+                        elif ch == 'u':
+                            new_added, total_count = self.track.refresh_playlist(self.music_dir)
+                            if new_added > 0:
+                                self.status_message = f"🔄 Playlist diperbarui! ({new_added} lagu baru ditemukan, Total: {total_count} lagu)"
+                            else:
+                                self.status_message = f"🔄 Playlist di-rescan (Total: {total_count} lagu)"
+                            key_pressed = True
                         elif ch == 'y':
                             await self._handle_youtube_input()
                             key_pressed = True
