@@ -40,12 +40,12 @@ def format_progress(elapsed_sec: float, duration_sec: float, bar_width: int = 15
 class CLIController:
     """
     Pengontrol terminal interaktif tanpa perlu menekan Enter (msvcrt di Windows),
-    dilengkapi fitur visualisasi statistik dual-stream real-time, mode switch playlist, & pengunduhan YouTube di latar belakang.
+    dilengkapi fitur visualisasi statistik dual-stream real-time (MeshCast WebRTC & HLS Cloudflare CDN), mode switch playlist, & pengunduhan YouTube di latar belakang.
     """
-    def __init__(self, track, whip_client, icecast_client=None, music_dir=".."):
+    def __init__(self, track, whip_client, hls_streamer=None, music_dir=".."):
         self.track = track
         self.whip_client = whip_client
-        self.icecast_client = icecast_client
+        self.hls_streamer = hls_streamer
         self.music_dir = music_dir
         self.is_running = True
         self.status_message = ""
@@ -78,7 +78,7 @@ class CLIController:
             self._last_whip_stats_time = now
         whip_stats = self._cached_whip_stats
 
-        ice_stats = self.icecast_client.get_icecast_stats() if self.icecast_client else None
+        hls_stats = self.hls_streamer.get_hls_stats() if self.hls_streamer else None
         
         state_str = "▶ PLAYING" if status["is_playing"] else "⏸ PAUSED"
         mute_str = " 🔇 MUTED" if status["is_muted"] else ""
@@ -185,7 +185,7 @@ class CLIController:
         else:
             # Mode Utama (Dashboard Stats & Controls)
             print("==========================================================")
-            print("  📡 RAW OPUS DUAL STREAMER (MESHCAST & ICECAST2) 📡       ")
+            print("  📡 RAW OPUS DUAL STREAMER (MESHCAST & HLS CDN) 📡        ")
             print("==========================================================")
             print(f" Status Siaran : {state_str}{mute_str}")
             print(f" Lagu Aktif    : [{status['index']}/{status['total']}] {status['track']}")
@@ -194,17 +194,17 @@ class CLIController:
                 print(f" Info          : {self.status_message}")
             
             # Streaming Targets Status
-            ice_status_str = "CONNECTED 🟢" if (ice_stats and ice_stats["is_connected"]) else "OFFLINE 🔴"
-            ice_url = ice_stats["public_url"] if ice_stats else "N/A"
-            ice_bytes = format_bytes(ice_stats["total_bytes"]) if ice_stats else "0 B"
-            ice_bitrate = ice_stats["instant_bitrate_kbps"] if ice_stats else 0.0
+            hls_status_str = "ACTIVE 🟢" if (hls_stats and hls_stats["is_running"]) else "OFFLINE 🔴"
+            hls_url = hls_stats["public_url"] if hls_stats else "N/A"
+            hls_bytes = format_bytes(hls_stats["total_bytes"]) if hls_stats else "0 B"
+            hls_reqs = hls_stats["http_requests"] if hls_stats else 0
 
             if not self.show_detailed_stats:
                 # Mode Ringkas (Compact Stats)
                 print("------------------ 📻 DUAL STREAM TARGETS ----------------")
                 print(f" 🚀 Stream #1 (MeshCast WebRTC) : State={conn_state} ({inst_bitrate:.1f} kbps)")
-                print(f" 🌐 Stream #2 (Icecast Tunnel) : {ice_status_str} ({ice_bitrate:.1f} kbps)")
-                print(f"    🔗 Public Icecast Stream   : {ice_url}")
+                print(f" 🌐 Stream #2 (HLS Cloudflare)  : {hls_status_str} (Reqs: {hls_reqs:,})")
+                print(f"    🔗 Public HLS Stream        : {hls_url}")
                 print("----------------------------------------------------------")
                 print(f" ⏱️  Uptime   : {uptime_str:<12} 📦 Total Audio : {bytes_str}")
             else:
@@ -213,9 +213,9 @@ class CLIController:
                 print(f" ⏱️  Durasi Streaming : {uptime_str}")
                 print(f" 🚀 Stream #1 (MeshCast) : State={conn_state} | ICE={whip_stats['ice_connection_state']} | DTLS={dtls_state}")
                 print(f"    - Bitrate          : {inst_bitrate:.1f} kbps (Avg: {avg_bitrate:.1f} kbps) | Sent: {bytes_str}")
-                print(f" 🌐 Stream #2 (Icecast)  : State={ice_status_str} | Local=http://localhost:8000/lsnn_radio")
-                print(f"    - URL Publik       : {ice_url}")
-                print(f"    - Bitrate          : {ice_bitrate:.1f} kbps (Avg: {ice_stats['avg_bitrate_kbps'] if ice_stats else 0:.1f} kbps) | Sent: {ice_bytes}")
+                print(f" 🌐 Stream #2 (HLS CDN)  : State={hls_status_str} | Local=http://localhost:8000/live.m3u8")
+                print(f"    - URL Publik CDN   : {hls_url}")
+                print(f"    - Served HTTP Data : {hls_bytes} ({hls_reqs:,} Requests Served)")
                 print(f" 📦 Paket Audio Pacer  : Total={pacer_stats['total_frames']:,} | Audio={pacer_stats['audio_frames']:,} | Silence={pacer_stats['silence_frames']:,}")
                 print(f" ⚡ Rate & Drift       : {pacer_stats['instant_pps']:.1f} pps | Drift Realtime={pacer_stats['instant_drift_ms']:.2f} ms | Avg={pacer_stats['avg_drift_ms']:.2f} ms")
 

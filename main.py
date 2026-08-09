@@ -7,15 +7,14 @@ import argparse
 
 from rtp_pacer import RawOpusTrack
 from whip_client import WHIPClient
-from icecast_client import IcecastClient
+from hls_streamer import HLSStreamer
 from cli_controller import CLIController
 from service_manager import check_and_start_all_services, stop_all_services
 
 import ctypes
 
 DEFAULT_WHIP_URL = "https://cn1.meshcast.io/whip/lsnn_radio"
-DEFAULT_ICECAST_MOUNT = "/lsnn_radio"
-DEFAULT_PUBLIC_ICECAST_URL = "https://radio.samf.fun/lsnn_radio"
+DEFAULT_PUBLIC_HLS_URL = "https://radio.samf.fun/live.m3u8"
 
 def set_win_high_precision_timer(enable: bool):
     """
@@ -42,12 +41,11 @@ def get_opus_playlist(music_dir: str, shuffle: bool = True) -> list[str]:
 async def main():
     set_win_high_precision_timer(True)
     try:
-        parser = argparse.ArgumentParser(description="Raw Opus Dual Streamer (MeshCast WHIP & Icecast2)")
+        parser = argparse.ArgumentParser(description="Raw Opus Dual Streamer (MeshCast WHIP & HLS Cloudflare CDN)")
         parser.add_argument("--url", default=DEFAULT_WHIP_URL, help="Target URL endpoint WHIP")
         parser.add_argument("--dir", default="..", help="Direktori lagu (.opus), default ke folder induk (..)")
-        parser.add_argument("--icecast-mount", default=DEFAULT_ICECAST_MOUNT, help="Mount point Icecast (default: /lsnn_radio)")
-        parser.add_argument("--icecast-pass", default="hackme", help="Password source Icecast (default: hackme)")
-        parser.add_argument("--public-url", default=DEFAULT_PUBLIC_ICECAST_URL, help="URL Publik Icecast Tunnel")
+        parser.add_argument("--public-url", default=DEFAULT_PUBLIC_HLS_URL, help="URL Publik HLS Cloudflare CDN")
+        parser.add_argument("--hls-port", type=int, default=8000, help="Port lokal HTTP server HLS (default: 8000)")
         args = parser.parse_args()
 
         music_dir = os.path.abspath(args.dir)
@@ -57,7 +55,7 @@ async def main():
             print(f"[Main Error] Tidak ditemukan file *.opus di direktori: {music_dir}")
             sys.exit(1)
 
-        print("[Main] Memeriksa dan mengaktifkan layanan Icecast2 & Cloudflared...")
+        print("[Main] Memeriksa dan mengaktifkan layanan Cloudflared...")
         check_and_start_all_services()
 
         print(f"[Main] Ditemukan {len(playlist)} file lagu .opus di {music_dir}")
@@ -68,26 +66,25 @@ async def main():
         # Inisialisasi Klien WHIP (MeshCast)
         whip_client = WHIPClient(args.url, track)
 
-        # Inisialisasi Klien Icecast2 (Self-Hosted via Cloudflared)
-        icecast_client = IcecastClient(
+        # Inisialisasi HLS Streamer (fMP4 Opus Cloudflare CDN Engine)
+        hls_streamer = HLSStreamer(
             host="127.0.0.1",
-            port=8000,
-            mount=args.icecast_mount,
-            password=args.icecast_pass,
+            port=args.hls_port,
+            output_dir="hls_output",
             public_url=args.public_url
         )
 
-        # Daftarkan listener paket ke Icecast
-        track.add_packet_listener(icecast_client.enqueue_opus_frame)
+        # Daftarkan listener paket ke HLS Streamer
+        track.add_packet_listener(hls_streamer.enqueue_opus_frame)
 
         try:
-            # Koneksi ke Meshcast WHIP & Icecast2 secara simultan
-            print("[Main] Menghubungkan Dual Stream (MeshCast & Icecast2)...")
+            # Koneksi ke Meshcast WHIP & Memulai HLS Streamer secara simultan
+            print("[Main] Menghubungkan Dual Stream (MeshCast & HLS CDN)...")
             await whip_client.connect()
-            await icecast_client.connect()
+            await hls_streamer.start()
             
             # Jalankan Pengontrol CLI Interaktif Dual Stream
-            cli = CLIController(track, whip_client, icecast_client, music_dir)
+            cli = CLIController(track, whip_client, hls_streamer, music_dir)
             await cli.run()
 
         except Exception as e:
@@ -96,7 +93,7 @@ async def main():
             print("[Main] Menutup track dan koneksi Dual Stream...")
             track.stop()
             await whip_client.close()
-            await icecast_client.close()
+            await hls_streamer.stop()
             stop_all_services()
             print("[Main] Selesai.")
     finally:
@@ -108,5 +105,6 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\nDihentikan oleh pengguna.")
         stop_all_services()
+
 
 
