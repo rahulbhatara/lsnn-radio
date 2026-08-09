@@ -29,9 +29,19 @@ class WHIPClient:
         offer = await self.pc.createOffer()
         await self.pc.setLocalDescription(offer)
 
-        # Tunggu ICE gathering selesai agar SDP offer lengkap
-        while self.pc.iceGatheringState != "complete":
-            await asyncio.sleep(0.1)
+        # Gunakan asyncio.Event untuk menunggu ICE gathering selesai tanpa busy-polling
+        if self.pc.iceGatheringState != "complete":
+            ice_complete_event = asyncio.Event()
+
+            @self.pc.on("icegatheringstatechange")
+            def on_ice_gathering_state_change():
+                if self.pc and self.pc.iceGatheringState == "complete":
+                    ice_complete_event.set()
+
+            try:
+                await asyncio.wait_for(ice_complete_event.wait(), timeout=10.0)
+            except asyncio.TimeoutError:
+                print("[WHIP Warning] ICE gathering timeout, menggunakan candidate yang ada.")
 
         sdp_offer = self.pc.localDescription.sdp
         headers = {

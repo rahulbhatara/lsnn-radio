@@ -2,6 +2,7 @@ import os
 import time
 import random
 import asyncio
+from collections import deque
 import av
 from fractions import Fraction
 from aiortc import MediaStreamTrack
@@ -32,15 +33,15 @@ class RawOpusTrack(MediaStreamTrack):
         self._pts = 0
         self._next_pacing_time = None
         
-        # Telemetry & Statistics
+        # Telemetry & Statistics (Gunakan deque O(1) ops untuk bebas alokasi memori & GC pressure)
         self.start_time = time.monotonic()
         self.total_frames = 0
         self.audio_frames = 0
         self.silence_frames = 0
         self.total_bytes = 0
         self.track_frames_played = 0
-        self._sliding_bytes = []  # list of (timestamp, byte_len)
-        self._pacing_drifts = []  # list of drift in ms
+        self._sliding_bytes = deque()  # deque of (timestamp, byte_len)
+        self._pacing_drifts = deque(maxlen=50)  # deque drift in ms dengan maxlen otomatis
 
         if self.playlist:
             # Lakukan pengacakan tingkat tinggi saat awal inisialisasi track
@@ -55,7 +56,6 @@ class RawOpusTrack(MediaStreamTrack):
             return
 
         rng = random.SystemRandom()
-        rng.shuffle(self.playlist)
         rng.shuffle(self.playlist)
 
         if avoid_repeat_track and len(self.playlist) > 1 and self.playlist[0] == avoid_repeat_track:
@@ -75,7 +75,6 @@ class RawOpusTrack(MediaStreamTrack):
         
         rng = random.SystemRandom()
         other_tracks = [t for i, t in enumerate(self.playlist) if i != self.current_index]
-        rng.shuffle(other_tracks)
         rng.shuffle(other_tracks)
 
         new_playlist = other_tracks[:self.current_index] + ([current_track] if current_track else []) + other_tracks[self.current_index:]
@@ -197,10 +196,8 @@ class RawOpusTrack(MediaStreamTrack):
             "max_drift_ms": max_drift,
         }
 
-    def _record_packet_stats(self, packet: av.Packet):
-        raw_b = bytes(packet)
-        pkt_len = len(raw_b)
-        is_silence = (raw_b == OPUS_SILENCE_FRAME)
+    def _record_packet_stats(self, packet: av.Packet, is_silence: bool = False):
+        pkt_len = packet.size if hasattr(packet, 'size') and packet.size is not None else len(packet)
 
         self.total_frames += 1
         if is_silence:
@@ -214,7 +211,7 @@ class RawOpusTrack(MediaStreamTrack):
         self._sliding_bytes.append((now_ts, pkt_len))
         cutoff = now_ts - 3.0
         while self._sliding_bytes and self._sliding_bytes[0][0] < cutoff:
-            self._sliding_bytes.pop(0)
+            self._sliding_bytes.popleft()
 
     async def recv(self) -> av.Packet:
         # Pacing kontrol jam real-time (20ms per frame)
@@ -226,12 +223,10 @@ class RawOpusTrack(MediaStreamTrack):
             if delay > 0:
                 await asyncio.sleep(delay)
             
-            # Hitung pacing drift dalam ms
+            # Hitung pacing drift dalam ms (maxlen=50 otomatis membuang data lama O(1))
             actual_wake = time.monotonic()
             drift_ms = abs(actual_wake - self._next_pacing_time) * 1000.0
             self._pacing_drifts.append(drift_ms)
-            if len(self._pacing_drifts) > 50:
-                self._pacing_drifts.pop(0)
 
             self._next_pacing_time += FRAME_DURATION_SEC
 
@@ -243,7 +238,7 @@ class RawOpusTrack(MediaStreamTrack):
             p = av.Packet(OPUS_SILENCE_FRAME)
             p.pts = self._pts
             p.time_base = Fraction(1, 48000)
-            self._record_packet_stats(p)
+            self._record_packet_stats(p, is_silence=True)
             return p
 
         # Ambil paket raw Opus dari demuxer (lagu tetap berjalan di background)
@@ -261,7 +256,7 @@ class RawOpusTrack(MediaStreamTrack):
             p = av.Packet(OPUS_SILENCE_FRAME)
             p.pts = self._pts
             p.time_base = Fraction(1, 48000)
-            self._record_packet_stats(p)
+            self._record_packet_stats(p, is_silence=True)
             return p
 
         # Lagu sedang dibaca: naikkan counter frame lagu yang diputar
@@ -272,13 +267,13 @@ class RawOpusTrack(MediaStreamTrack):
             p = av.Packet(OPUS_SILENCE_FRAME)
             p.pts = self._pts
             p.time_base = Fraction(1, 48000)
-            self._record_packet_stats(p)
+            self._record_packet_stats(p, is_silence=True)
             return p
 
         # Atur timestamp linier pada paket asli dari file
         packet.pts = self._pts
         packet.time_base = Fraction(1, 48000)
-        self._record_packet_stats(packet)
+        self._record_packet_stats(packet, is_silence=False)
         return packet
 
     def stop(self):

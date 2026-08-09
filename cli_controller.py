@@ -54,6 +54,8 @@ class CLIController:
         self.selected_index = 0
         self.search_query = ""
         self.search_mode_active = False
+        self._cached_whip_stats = None
+        self._last_whip_stats_time = 0.0
 
     def _get_filtered_playlist(self) -> list[tuple[int, str]]:
         if not self.search_query:
@@ -62,10 +64,18 @@ class CLIController:
         return [(i, p) for i, p in enumerate(self.track.playlist) if query in os.path.basename(p).lower()]
 
     async def print_menu(self):
-        os.system('cls' if os.name == 'nt' else 'clear')
+        # Gunakan ANSI escape sequence untuk refresh terminal tanpa me-spawn sub-proses (Zero CPU Waste)
+        sys.stdout.write("\033[H\033[2J")
+        sys.stdout.flush()
+
         status = self.track.get_status()
         pacer_stats = self.track.get_pacer_stats()
-        whip_stats = await self.whip_client.get_whip_stats()
+        
+        now = time.monotonic()
+        if self.show_detailed_stats or (now - self._last_whip_stats_time > 2.0) or not self._cached_whip_stats:
+            self._cached_whip_stats = await self.whip_client.get_whip_stats()
+            self._last_whip_stats_time = now
+        whip_stats = self._cached_whip_stats
         
         state_str = "▶ PLAYING" if status["is_playing"] else "⏸ PAUSED"
         mute_str = " 🔇 MUTED" if status["is_muted"] else ""

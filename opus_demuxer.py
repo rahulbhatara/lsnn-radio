@@ -33,12 +33,15 @@ class OpusDemuxer:
         return 0.0
 
     def _read_packets(self):
+        headers_checked = 0
         for packet in self.container.demux(self.audio_stream):
             if packet.pts is not None or packet.is_keyframe:
-                raw_bytes = bytes(packet)
-                # Skip Ogg Opus headers
-                if raw_bytes.startswith(b'OpusHead') or raw_bytes.startswith(b'OpusTags'):
-                    continue
+                # Ogg Opus header (OpusHead & OpusTags) hanya ada di 2-3 paket pertama
+                if headers_checked < 3:
+                    raw_bytes = bytes(packet)
+                    headers_checked += 1
+                    if raw_bytes.startswith(b'OpusHead') or raw_bytes.startswith(b'OpusTags'):
+                        continue
                 yield packet
 
     def get_next_packet(self):
