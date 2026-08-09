@@ -1,6 +1,7 @@
 import os
 import sys
 import glob
+import random
 import asyncio
 import argparse
 from rtp_pacer import RawOpusTrack
@@ -9,9 +10,14 @@ from cli_controller import CLIController
 
 DEFAULT_WHIP_URL = "https://cn1.meshcast.io/whip/lsnn_radio"
 
-def get_opus_playlist(music_dir: str) -> list[str]:
+def get_opus_playlist(music_dir: str, shuffle: bool = True) -> list[str]:
     pattern = os.path.join(music_dir, "*.opus")
     playlist = sorted(glob.glob(pattern))
+    if shuffle and playlist:
+        # Gunakan SystemRandom untuk entropi tinggi dari sistem operasi
+        rng = random.SystemRandom()
+        rng.shuffle(playlist)
+        rng.shuffle(playlist)
     return playlist
 
 async def main():

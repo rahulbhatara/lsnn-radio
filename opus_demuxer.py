@@ -24,6 +24,14 @@ class OpusDemuxer:
         self.audio_stream = self.container.streams.audio[0]
         self.packet_generator = self._read_packets()
 
+    @property
+    def duration_sec(self) -> float:
+        if self.audio_stream and self.audio_stream.duration is not None and self.audio_stream.time_base:
+            return float(self.audio_stream.duration * self.audio_stream.time_base)
+        elif self.container and self.container.duration is not None:
+            return float(self.container.duration / av.TIME_BASE)
+        return 0.0
+
     def _read_packets(self):
         for packet in self.container.demux(self.audio_stream):
             if packet.pts is not None or packet.is_keyframe:

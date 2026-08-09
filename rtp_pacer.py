@@ -1,5 +1,6 @@
 import os
 import time
+import random
 import asyncio
 import av
 from fractions import Fraction
@@ -31,10 +32,59 @@ class RawOpusTrack(MediaStreamTrack):
         self._pts = 0
         self._next_pacing_time = None
         
+        # Telemetry & Statistics
+        self.start_time = time.monotonic()
+        self.total_frames = 0
+        self.audio_frames = 0
+        self.silence_frames = 0
+        self.total_bytes = 0
+        self.track_frames_played = 0
+        self._sliding_bytes = []  # list of (timestamp, byte_len)
+        self._pacing_drifts = []  # list of drift in ms
+
         if self.playlist:
+            # Lakukan pengacakan tingkat tinggi saat awal inisialisasi track
+            self.reshuffle_playlist_loop(avoid_repeat_track=None)
             self._load_demuxer()
 
+    def reshuffle_playlist_loop(self, avoid_repeat_track: str = None):
+        """
+        Mengacak seluruh playlist untuk siklus baru, memastikan lagu pertama tidak mengulang lagu terakhir.
+        """
+        if not self.playlist:
+            return
+
+        rng = random.SystemRandom()
+        rng.shuffle(self.playlist)
+        rng.shuffle(self.playlist)
+
+        if avoid_repeat_track and len(self.playlist) > 1 and self.playlist[0] == avoid_repeat_track:
+            swap_idx = rng.randint(1, len(self.playlist) - 1)
+            self.playlist[0], self.playlist[swap_idx] = self.playlist[swap_idx], self.playlist[0]
+
+        self.current_index = 0
+
+    def reshuffle_remaining(self):
+        """
+        Mengacak ulang sisa lagu di playlist tanpa menghentikan atau mengubah lagu yang sedang diputar.
+        """
+        if not self.playlist or len(self.playlist) <= 1:
+            return
+
+        current_track = self.playlist[self.current_index] if 0 <= self.current_index < len(self.playlist) else None
+        
+        rng = random.SystemRandom()
+        other_tracks = [t for i, t in enumerate(self.playlist) if i != self.current_index]
+        rng.shuffle(other_tracks)
+        rng.shuffle(other_tracks)
+
+        new_playlist = other_tracks[:self.current_index] + ([current_track] if current_track else []) + other_tracks[self.current_index:]
+        self.playlist = new_playlist
+        if current_track and current_track in self.playlist:
+            self.current_index = self.playlist.index(current_track)
+
     def _load_demuxer(self):
+        self.track_frames_played = 0
         if self.demuxer:
             self.demuxer.close()
             self.demuxer = None
@@ -58,7 +108,17 @@ class RawOpusTrack(MediaStreamTrack):
     def next_track(self):
         if not self.playlist:
             return
-        self.current_index = (self.current_index + 1) % len(self.playlist)
+        
+        last_track = self.playlist[self.current_index] if 0 <= self.current_index < len(self.playlist) else None
+
+        if self.current_index + 1 >= len(self.playlist):
+            if self.loop_playlist:
+                self.reshuffle_playlist_loop(avoid_repeat_track=last_track)
+            else:
+                self.current_index = 0
+        else:
+            self.current_index += 1
+
         self._load_demuxer()
 
     def prev_track(self):
@@ -66,6 +126,13 @@ class RawOpusTrack(MediaStreamTrack):
             return
         self.current_index = (self.current_index - 1) % len(self.playlist)
         self._load_demuxer()
+
+    def play_track_at_index(self, index: int):
+        if not self.playlist:
+            return
+        if 0 <= index < len(self.playlist):
+            self.current_index = index
+            self._load_demuxer()
 
     def insert_next_track(self, file_path: str) -> int:
         if not os.path.exists(file_path):
@@ -83,13 +150,71 @@ class RawOpusTrack(MediaStreamTrack):
             if self.playlist and 0 <= self.current_index < len(self.playlist)
             else "Tidak ada lagu"
         )
+        duration_sec = self.demuxer.duration_sec if self.demuxer else 0.0
+        elapsed_sec = self.track_frames_played * FRAME_DURATION_SEC
         return {
             "track": current_name,
             "index": self.current_index + 1 if self.playlist else 0,
             "total": len(self.playlist),
             "is_playing": self.is_playing,
             "is_muted": self.is_muted,
+            "track_elapsed_sec": elapsed_sec,
+            "track_duration_sec": duration_sec,
         }
+
+    def get_pacer_stats(self) -> dict:
+        now = time.monotonic()
+        uptime = max(0.001, now - self.start_time)
+        
+        # Sliding window bitrate (3 detik terakhir)
+        recent_bytes = sum(b for t, b in self._sliding_bytes)
+        recent_frames = len(self._sliding_bytes)
+        window_dur = (self._sliding_bytes[-1][0] - self._sliding_bytes[0][0]) if len(self._sliding_bytes) > 1 else 3.0
+        window_dur = max(0.1, window_dur)
+        
+        instant_bitrate_kbps = (recent_bytes * 8 / window_dur) / 1000.0 if recent_frames > 1 else 0.0
+        instant_pps = recent_frames / window_dur if recent_frames > 1 else 0.0
+        
+        avg_bitrate_kbps = (self.total_bytes * 8 / uptime) / 1000.0
+        avg_pps = self.total_frames / uptime
+        
+        instant_drift = self._pacing_drifts[-1] if self._pacing_drifts else 0.0
+        avg_drift = sum(self._pacing_drifts) / len(self._pacing_drifts) if self._pacing_drifts else 0.0
+        max_drift = max(self._pacing_drifts) if self._pacing_drifts else 0.0
+
+        return {
+            "uptime_sec": uptime,
+            "total_frames": self.total_frames,
+            "audio_frames": self.audio_frames,
+            "silence_frames": self.silence_frames,
+            "total_bytes": self.total_bytes,
+            "instant_bitrate_kbps": instant_bitrate_kbps,
+            "avg_bitrate_kbps": avg_bitrate_kbps,
+            "instant_pps": instant_pps,
+            "avg_pps": avg_pps,
+            "instant_drift_ms": instant_drift,
+            "avg_drift_ms": avg_drift,
+            "max_drift_ms": max_drift,
+        }
+
+    def _record_packet_stats(self, packet: av.Packet):
+        raw_b = bytes(packet)
+        pkt_len = len(raw_b)
+        is_silence = (raw_b == OPUS_SILENCE_FRAME)
+
+        self.total_frames += 1
+        if is_silence:
+            self.silence_frames += 1
+        else:
+            self.audio_frames += 1
+
+        self.total_bytes += pkt_len
+
+        now_ts = time.monotonic()
+        self._sliding_bytes.append((now_ts, pkt_len))
+        cutoff = now_ts - 3.0
+        while self._sliding_bytes and self._sliding_bytes[0][0] < cutoff:
+            self._sliding_bytes.pop(0)
 
     async def recv(self) -> av.Packet:
         # Pacing kontrol jam real-time (20ms per frame)
@@ -100,19 +225,28 @@ class RawOpusTrack(MediaStreamTrack):
             delay = self._next_pacing_time - now
             if delay > 0:
                 await asyncio.sleep(delay)
+            
+            # Hitung pacing drift dalam ms
+            actual_wake = time.monotonic()
+            drift_ms = abs(actual_wake - self._next_pacing_time) * 1000.0
+            self._pacing_drifts.append(drift_ms)
+            if len(self._pacing_drifts) > 50:
+                self._pacing_drifts.pop(0)
+
             self._next_pacing_time += FRAME_DURATION_SEC
 
         # Naikkan timestamp PTS secara linier dan bertahap (+960 samples per 20ms)
         self._pts += SAMPLES_PER_FRAME
 
-        # Jika dalam kondisi Pause atau Mute atau Playlist kosong
-        if not self.is_playing or self.is_muted or not self.demuxer:
+        # Jika dalam kondisi Pause atau Playlist kosong
+        if not self.is_playing or not self.demuxer:
             p = av.Packet(OPUS_SILENCE_FRAME)
             p.pts = self._pts
             p.time_base = Fraction(1, 48000)
+            self._record_packet_stats(p)
             return p
 
-        # Ambil paket raw Opus dari demuxer
+        # Ambil paket raw Opus dari demuxer (lagu tetap berjalan di background)
         packet = self.demuxer.get_next_packet()
 
         # Jika lagu selesai (EOF)
@@ -127,11 +261,24 @@ class RawOpusTrack(MediaStreamTrack):
             p = av.Packet(OPUS_SILENCE_FRAME)
             p.pts = self._pts
             p.time_base = Fraction(1, 48000)
+            self._record_packet_stats(p)
+            return p
+
+        # Lagu sedang dibaca: naikkan counter frame lagu yang diputar
+        self.track_frames_played += 1
+
+        # Jika MUTE aktif: ganti paket suara lagu dengan hening (posisi lagu tetap maju)
+        if self.is_muted:
+            p = av.Packet(OPUS_SILENCE_FRAME)
+            p.pts = self._pts
+            p.time_base = Fraction(1, 48000)
+            self._record_packet_stats(p)
             return p
 
         # Atur timestamp linier pada paket asli dari file
         packet.pts = self._pts
         packet.time_base = Fraction(1, 48000)
+        self._record_packet_stats(packet)
         return packet
 
     def stop(self):

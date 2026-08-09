@@ -57,6 +57,48 @@ class WHIPClient:
             await self.close()
             raise RuntimeError(f"Gagal melakukan handshake WHIP: {e}")
 
+    async def get_whip_stats(self) -> dict:
+        if not self.pc:
+            return {
+                "connection_state": "closed",
+                "ice_connection_state": "closed",
+                "ice_gathering_state": "closed",
+                "dtls_state": "closed",
+                "packets_sent": 0,
+                "bytes_sent": 0,
+            }
+
+        try:
+            stats_report = await self.pc.getStats()
+            packets_sent = 0
+            bytes_sent = 0
+            dtls_state = "unknown"
+
+            for stat in stats_report.values():
+                if stat.type == "outbound-rtp":
+                    packets_sent = getattr(stat, "packetsSent", packets_sent)
+                    bytes_sent = getattr(stat, "bytesSent", bytes_sent)
+                elif stat.type == "transport":
+                    dtls_state = getattr(stat, "dtlsState", dtls_state)
+
+            return {
+                "connection_state": self.pc.connectionState or "unknown",
+                "ice_connection_state": self.pc.iceConnectionState or "unknown",
+                "ice_gathering_state": self.pc.iceGatheringState or "unknown",
+                "dtls_state": dtls_state,
+                "packets_sent": packets_sent,
+                "bytes_sent": bytes_sent,
+            }
+        except Exception:
+            return {
+                "connection_state": getattr(self.pc, "connectionState", "error"),
+                "ice_connection_state": getattr(self.pc, "iceConnectionState", "error"),
+                "ice_gathering_state": getattr(self.pc, "iceGatheringState", "error"),
+                "dtls_state": "error",
+                "packets_sent": 0,
+                "bytes_sent": 0,
+            }
+
     async def close(self):
         if self.session_url and self.session:
             try:
