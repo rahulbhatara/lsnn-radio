@@ -61,7 +61,7 @@ class WHIPClient:
                 # Pasang SDP Answer dari server
                 answer = RTCSessionDescription(sdp=sdp_answer, type="answer")
                 await self.pc.setRemoteDescription(answer)
-                print("[WHIP] Koneksi WebRTC ke Meshcast BERHASIL terhubung! 🚀")
+                print("[WHIP] Koneksi WebRTC ke Meshcast BERHASIL terhubung!")
 
         except Exception as e:
             await self.close()
