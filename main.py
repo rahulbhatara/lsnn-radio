@@ -44,7 +44,7 @@ async def main_async(cfg: AppConfig, app: QApplication):
         whip_client = WHIPClient(cfg.whip_url, track)
         icecast = NativeIcecastServer(bitrate=128000)
         hls_streamer = HLSStreamer(
-            host="127.0.0.1",
+            host=cfg.hls_host,
             port=cfg.hls_port,
             output_dir="hls_output",
             public_url=cfg.public_hls_url,

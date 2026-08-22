@@ -10,6 +10,7 @@ class AppConfig:
     music_dir: str = ".."
     whip_url: str = "https://cn1.meshcast.io/whip/lsnn_radio"
     hls_port: int = 8000
+    hls_host: str = "0.0.0.0"
     public_hls_url: str = "https://radio.samf.fun/live.m3u8"
     tunnel_mode: str = "quick"  # "quick", "custom", "none"
     cloudflared_config_path: str = ""

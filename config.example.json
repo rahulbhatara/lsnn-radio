@@ -2,6 +2,7 @@
   "music_dir": "..",
   "whip_url": "https://cn1.meshcast.io/whip/lsnn_radio",
   "hls_port": 8000,
+  "hls_host": "0.0.0.0",
   "public_hls_url": "https://radio.samf.fun/live.m3u8",
   "tunnel_mode": "quick",
   "cloudflared_config_path": "",

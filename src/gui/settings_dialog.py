@@ -71,6 +71,10 @@ class SettingsDialog(QDialog):
         self.txtHlsPort.setPlaceholderText("8000")
         form_hls.addRow("Local Port:", self.txtHlsPort)
 
+        self.txtHlsHost = QLineEdit()
+        self.txtHlsHost.setPlaceholderText("0.0.0.0 (all interfaces)")
+        form_hls.addRow("Bind Host:", self.txtHlsHost)
+
         self.txtPublicUrl = QLineEdit()
         self.txtPublicUrl.setPlaceholderText("https://radio.samf.fun/live.m3u8")
         form_hls.addRow("Public CDN URL:", self.txtPublicUrl)
@@ -120,6 +124,7 @@ class SettingsDialog(QDialog):
         self.txtMusicDir.setText(self.config.music_dir)
         self.txtWhipUrl.setText(self.config.whip_url)
         self.txtHlsPort.setText(str(self.config.hls_port))
+        self.txtHlsHost.setText(self.config.hls_host)
         self.txtPublicUrl.setText(self.config.public_hls_url)
 
         # Tunnel mode
@@ -167,6 +172,7 @@ class SettingsDialog(QDialog):
         self.config.music_dir = self.txtMusicDir.text().strip() or ".."
         self.config.whip_url = self.txtWhipUrl.text().strip() or "https://cn1.meshcast.io/whip/lsnn_radio"
         self.config.hls_port = port
+        self.config.hls_host = self.txtHlsHost.text().strip() or "0.0.0.0"
         self.config.tunnel_mode = self.comboTunnelMode.currentData()
         self.config.public_hls_url = self.txtPublicUrl.text().strip() or "https://radio.samf.fun/live.m3u8"
         self.config.cloudflared_config_path = self.txtCustomConfig.text().strip()
