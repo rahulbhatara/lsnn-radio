@@ -72,7 +72,7 @@ class HLSStreamer:
         self._pts = 0
 
     async def start(self) -> bool:
-        print(f"[HLS] Memulai HLS Segmenter Engine & HTTP Server di http://{self.host}:{self.port} ...")
+        print(f"[HLS] Starting HLS Segmenter Engine & HTTP Server (base port: {self.port})...")
         try:
             self._init_pyav_hls()
             self.packet_queue = asyncio.Queue(maxsize=300)
@@ -85,17 +85,31 @@ class HLSStreamer:
 
             self.runner = web.AppRunner(app)
             await self.runner.setup()
-            self.site = web.TCPSite(self.runner, self.host, self.port)
-            await self.site.start()
+
+            # Attempt to bind to requested port, with auto-scan fallback if occupied
+            bound = False
+            for test_port in range(self.port, self.port + 30):
+                try:
+                    site = web.TCPSite(self.runner, self.host, test_port)
+                    await site.start()
+                    self.site = site
+                    self.port = test_port
+                    bound = True
+                    break
+                except OSError:
+                    continue
+
+            if not bound:
+                raise OSError(f"Could not bind HLS HTTP Server to any port in range {self.port}-{self.port + 30}")
 
             self.is_running = True
             self.start_time = time.monotonic()
             self.mux_task = asyncio.create_task(self._mux_loop())
 
-            print(f"[HLS] HLS Server AKTIF! URL Publik CDN: {self.public_url}")
+            print(f"[HLS] Server active on http://{self.host}:{self.port} (Public URL: {self.public_url})")
             return True
         except Exception as e:
-            print(f"[HLS Error] Gagal meluncurkan HLS Server: {e}")
+            print(f"[HLS Error] Failed to launch HLS Server: {e}")
             await self.stop()
             return False
 
@@ -134,8 +148,17 @@ class HLSStreamer:
 
     async def _handle_m3u8(self, request: web.Request) -> web.Response:
         self.http_requests_count += 1
+        for _ in range(30):
+            if os.path.exists(self.m3u8_file):
+                break
+            await asyncio.sleep(0.1)
+
         if not os.path.exists(self.m3u8_file):
-            return web.Response(status=404, text="Playlist belum siap.")
+            return web.Response(
+                status=503,
+                text="Playlist initializing, please retry in 2 seconds.",
+                headers={"Retry-After": "2", "Access-Control-Allow-Origin": "*"}
+            )
         
         try:
             current_mtime = os.path.getmtime(self.m3u8_file)

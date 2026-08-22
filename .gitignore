@@ -1,54 +1,26 @@
-# ==========================================
-# 1. Environment, Secrets & Credentials
-# ==========================================
+# Python & Virtual Environment
+.venv/
+__pycache__/
+*.py[cod]
+
+# Local Configuration & Secrets
 .env
 .env.*
 !.env.example
-*.pem
-*.key
-*.cert
-*.crt
+config.json
+!config.example.json
 
-# ==========================================
-# 2. Python & Virtual Environments
-# ==========================================
-.venv/
-venv/
-env/
-ENV/
-__pycache__/
-*.py[cod]
-*$py.class
-*.pyd
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-*.spec
+# Local Music Library (Prevent committing personal audio files)
+music/
+*.opus
+*.mp3
+*.wav
+*.flac
+*.m4a
+*.aac
+*.ogg
 
-# ==========================================
-# 3. Rust & Cargo Artifacts
-# ==========================================
-target/
-.cargo/
-**/*.rs.bk
-Cargo.lock.orig
-
-# ==========================================
-# 4. Media Streaming, FFmpeg & yt-dlp Temp Files
-# ==========================================
+# HLS Stream Output & Temporary Files
 hls_output/
 init.mp4
 *.m4s
@@ -56,53 +28,11 @@ init.mp4
 *.ytdl
 *.temp
 *.tmp
-
-# ==========================================
-# 5. Testing, Linting & Coverage
-# ==========================================
-.pytest_cache/
-.coverage
-.coverage.*
-htmlcov/
-.mypy_cache/
-.ruff_cache/
-
-# ==========================================
-# 6. IDEs & Editors
-# ==========================================
-.vscode/*
-!.vscode/settings.json
-!.vscode/tasks.json
-!.vscode/launch.json
-!.vscode/extensions.json
-.idea/
-*.sublime-workspace
-*.sublime-project
-*.swp
-*~
-
-# ==========================================
-# 7. OS Metadata
-# ==========================================
-# Windows
-Thumbs.db
-Thumbs.db:encryptable
-ehthumbs.db
-ehthumbs_vista.db
-Desktop.ini
-$RECYCLE.BIN/
-*.lnk
-
-# macOS & Linux
-.DS_Store
-.AppleDouble
-.LSOverride
-._*
-.directory
-
-# ==========================================
-# 8. AI Agent & Logs
-# ==========================================
-.agents/
-.gemini/
 *.log
+
+# IDE & OS Metadata
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini
