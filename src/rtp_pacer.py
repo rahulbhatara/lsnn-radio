@@ -389,13 +389,15 @@ class RawOpusTrack(MediaStreamTrack):
     async def recv(self) -> av.Packet:
         # Pacing kontrol jam real-time (20ms per frame)
         now = time.monotonic()
-        if self._next_pacing_time is None:
+        # Resync jam pacing jika tertinggal jauh (system sleep / event-loop stall)
+        # agar tidak mengirim burst puluhan frame sekaligus saat bangun.
+        if self._next_pacing_time is None or (self._next_pacing_time - now) < -0.5:
             self._next_pacing_time = now + FRAME_DURATION_SEC
         else:
             delay = self._next_pacing_time - now
             if delay > 0:
                 await asyncio.sleep(delay)
-            
+
             # Hitung pacing drift dalam ms (maxlen=50 otomatis membuang data lama O(1))
             actual_wake = time.monotonic()
             drift_ms = abs(actual_wake - self._next_pacing_time) * 1000.0

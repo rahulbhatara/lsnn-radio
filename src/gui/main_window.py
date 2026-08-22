@@ -33,11 +33,12 @@ class MainWindow(QMainWindow):
         self.closed_signal.emit()
         event.accept()
 
-    def __init__(self, track, whip_client, hls_streamer, config: AppConfig = None, music_dir: str = None):
+    def __init__(self, track, whip_client, hls_streamer, config: AppConfig = None, music_dir: str = None, icecast=None):
         super().__init__()
         self.track = track
         self.whip_client = whip_client
         self.hls_streamer = hls_streamer
+        self.icecast = icecast
         self.config = config or AppConfig.load()
         self.music_dir = music_dir or self.config.music_dir
 
@@ -542,6 +543,17 @@ class MainWindow(QMainWindow):
         self.lblDataSent.setObjectName("statusItem")
         row.addWidget(self.lblDataSent)
 
+        # Toggle relay AAC/Icecast-native (default OFF) untuk pendengar legacy
+        if self.icecast is not None:
+            self.btnIcecast = QPushButton("AAC Off")
+            self.btnIcecast.setToolTip(
+                "Enable legacy Icecast-compatible AAC stream at /live\n"
+                "(for listeners that cannot play Opus/HLS)"
+            )
+            self.btnIcecast.setCursor(Qt.PointingHandCursor)
+            self.btnIcecast.clicked.connect(self._on_toggle_icecast)
+            row.addWidget(self.btnIcecast)
+
         btnCopyUrl = QPushButton("Copy URL")
         btnCopyUrl.setStyleSheet(
             "border: none; color: #4b5563; font-size: 11px; padding: 2px 6px;"
@@ -617,6 +629,42 @@ class MainWindow(QMainWindow):
             url = f"{tunnel_info['quick_url']}/live.m3u8"
         QApplication.clipboard().setText(url)
         self.log_event(f"Copied: {url}")
+
+    def _live_urls(self) -> tuple:
+        """Kembalikan (local_url, public_url) untuk mount point /live AAC."""
+        port = self.hls_streamer.port if self.hls_streamer else 8000
+        local = f"http://127.0.0.1:{port}/live"
+        public = ""
+        pub = getattr(self.hls_streamer, "public_url", "") if self.hls_streamer else ""
+        if pub and "/" in pub:
+            base = pub.rsplit("/", 1)[0]
+            public = f"{base}/live"
+        tunnel_info = get_tunnel_status()
+        quick = tunnel_info.get("quick_url")
+        if quick:
+            public = f"{quick}/live"
+        return local, public
+
+    def _on_toggle_icecast(self):
+        if self.icecast is None:
+            return
+        if self.icecast.enabled:
+            self.icecast.disable()
+            self.btnIcecast.setText("AAC Off")
+            self.btnIcecast.setStyleSheet("")
+            self.log_event("AAC/Icecast relay OFF")
+        else:
+            if self.icecast.enable():
+                self.btnIcecast.setStyleSheet(
+                    "background-color: #059669; color: #ffffff; border-color: #10b981; "
+                    "font-weight: 700; padding: 6px 12px;"
+                )
+                local, public = self._live_urls()
+                self.log_event(f"AAC/Icecast relay ON -> {local}")
+                if public:
+                    self.log_event(f"AAC/Icecast public: {public}")
+            else:
+                self.log_event("AAC/Icecast relay FAILED to initialize")
 
     def _browse_and_set_music_dir(self):
         folder = QFileDialog.getExistingDirectory(self, "Select Music Directory", self.music_dir)
@@ -772,7 +820,7 @@ class MainWindow(QMainWindow):
         idx = item_num.data(Qt.UserRole)
         if idx is not None and 0 <= idx < len(self.track.library):
             file_path = self.track.library[idx]
-            self.track.play_direct(file_path)
+            self.track.play_track_direct(file_path)
             self._populate_all_tables()
             self.log_event(f"Playing now: {os.path.basename(file_path)}")
 
@@ -787,7 +835,7 @@ class MainWindow(QMainWindow):
         idx = item_num.data(Qt.UserRole)
         if idx is not None and 0 <= idx < len(self.track.library):
             file_path = self.track.library[idx]
-            pos = self.track.add_to_queue(file_path)
+            pos = self.track.add_to_queue_bottom(file_path)
             self._populate_queue_table()
             self.log_event(f"Queued: {os.path.basename(file_path)} (#{pos})")
 
@@ -819,7 +867,7 @@ class MainWindow(QMainWindow):
 
         action = menu.exec(self.tableLibrary.viewport().mapToGlobal(pos))
         if action == act_play_now:
-            self.track.play_direct(file_path)
+            self.track.play_track_direct(file_path)
             self._populate_all_tables()
             self.log_event(f"Playing now: {track_name}")
         elif action == act_play_next:
@@ -827,7 +875,7 @@ class MainWindow(QMainWindow):
             self._populate_queue_table()
             self.log_event(f"Queued next: {track_name} (#{pos_idx})")
         elif action == act_add_queue:
-            pos_idx = self.track.add_to_queue(file_path)
+            pos_idx = self.track.add_to_queue_bottom(file_path)
             self._populate_queue_table()
             self.log_event(f"Queued: {track_name} (#{pos_idx})")
         elif action == act_reveal:
@@ -841,7 +889,7 @@ class MainWindow(QMainWindow):
         if 0 <= row < len(self.track.user_queue):
             file_path = self.track.user_queue[row]
             self.track.remove_from_queue(row)
-            self.track.play_direct(file_path)
+            self.track.play_track_direct(file_path)
             self._populate_all_tables()
             self.log_event(f"Playing from queue: {os.path.basename(file_path)}")
 
@@ -868,7 +916,7 @@ class MainWindow(QMainWindow):
         chosen = menu.exec(self.tableQueue.viewport().mapToGlobal(pos))
         if chosen == act_play_now:
             self.track.remove_from_queue(row)
-            self.track.play_direct(file_path)
+            self.track.play_track_direct(file_path)
             self._populate_all_tables()
             self.log_event(f"Playing now: {track_name}")
 
@@ -1064,6 +1112,15 @@ class MainWindow(QMainWindow):
             self.lblUptime.setText(format_duration(pacer['uptime_sec']))
             self.lblBitrate.setText(f"{pacer['instant_bitrate_kbps']:.1f} kbps")
             self.lblDataSent.setText(f"{format_bytes(pacer['total_bytes'])} sent")
+
+            # Icecast/AAC toggle label (listener count live update)
+            if self.icecast is not None and hasattr(self, 'btnIcecast'):
+                ic = self.icecast.get_stats()
+                if ic["enabled"]:
+                    n = ic["listeners"]
+                    self.btnIcecast.setText(f"AAC On · {n} listener" + ("s" if n != 1 else ""))
+                else:
+                    self.btnIcecast.setText("AAC Off")
 
         except Exception:
             pass

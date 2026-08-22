@@ -1,5 +1,7 @@
 import os
+import re
 import time
+import html
 import shutil
 import asyncio
 import fractions
@@ -7,6 +9,10 @@ from typing import Dict, Any, Optional
 from collections import deque
 import av
 from aiohttp import web
+
+# Whitelist nama file segmen yang valid: init.mp4 / xxx.m4s / xxx.mp4.
+# Mencegah path traversal & arbitrary file read via HTTP.
+_SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.\-]*\.(?:m4s|mp4)$")
 
 class HLSStreamer:
     """
@@ -18,12 +24,16 @@ class HLSStreamer:
         host: str = "127.0.0.1",
         port: int = 8000,
         output_dir: str = "hls_output",
-        public_url: str = "https://radio.samf.fun/live.m3u8"
+        public_url: str = "https://radio.samf.fun/live.m3u8",
+        icecast_server=None
     ):
         self.host = host
         self.port = port
         self.output_dir = os.path.abspath(output_dir)
         self.public_url = public_url
+        # Relay AAC/Icecast-native opsional; route "/live" di-mount di app yang sama
+        # agar tetap terjangkau oleh Cloudflare tunnel (tunnel menunjuk ke port ini).
+        self.icecast_server = icecast_server
         
         self.m3u8_file = os.path.join(self.output_dir, "live.m3u8")
         self.container: Optional[av.container.OutputContainer] = None
@@ -57,6 +67,9 @@ class HLSStreamer:
         self._prepare_output_dir()
         
         # Inisialisasi PyAV HLS Muxer (2-second fMP4 segments with auto-cleanup)
+        # Gunakan epoch timestamp sebagai start_number & init filename agar URL segmen unik tiap sesi,
+        # mencegah Cloudflare CDN / Browser menyajikan cache segmen lama dari sesi sebelumnya.
+        session_id = int(time.time())
         self.container = av.open(
             self.m3u8_file,
             mode="w",
@@ -65,7 +78,9 @@ class HLSStreamer:
                 "hls_time": "2",
                 "hls_list_size": "5",
                 "hls_segment_type": "fmp4",
-                "hls_flags": "delete_segments+omit_endlist"
+                "hls_flags": "delete_segments+omit_endlist",
+                "start_number": str(session_id),
+                "hls_fmp4_init_filename": f"init_{session_id}.mp4",
             }
         )
         self.audio_stream = self.container.add_stream("opus", rate=48000)
@@ -78,7 +93,11 @@ class HLSStreamer:
             self.packet_queue = asyncio.Queue(maxsize=300)
             
             # Setup aiohttp web server
+            # Catatan: route statis (/live) HARUS didaftarkan sebelum /{filename}
+            # karena aiohttp mencocokkan route berurutan.
             app = web.Application()
+            if self.icecast_server is not None:
+                app.router.add_get("/live", self.icecast_server.handle_request)
             app.router.add_get("/live.m3u8", self._handle_m3u8)
             app.router.add_get("/{filename}", self._handle_segment)
             app.router.add_get("/", self._handle_index)
@@ -187,15 +206,20 @@ class HLSStreamer:
     async def _handle_segment(self, request: web.Request) -> web.Response:
         self.http_requests_count += 1
         filename = request.match_info.get("filename", "")
+
+        # Security: tolak nama file di luar whitelist (blokir "../", backslash, ekstensi lain)
+        if not _SAFE_SEGMENT_RE.match(filename):
+            return web.Response(status=404, text="File segmen tidak ditemukan.")
+
         file_path = os.path.join(self.output_dir, filename)
 
         # Fallback: Jika init.mp4 dibuat oleh PyAV/FFmpeg di root working directory
-        if not os.path.exists(file_path):
+        if not os.path.isfile(file_path):
             root_fallback = os.path.abspath(filename)
-            if os.path.exists(root_fallback):
+            if os.path.isfile(root_fallback):
                 file_path = root_fallback
 
-        if not os.path.exists(file_path) or not os.path.isfile(file_path):
+        if not os.path.isfile(file_path):
             return web.Response(status=404, text="File segmen tidak ditemukan.")
 
         try:
@@ -210,7 +234,7 @@ class HLSStreamer:
                 path=file_path,
                 headers={
                     "Content-Type": content_type,
-                    "Cache-Control": "public, max-age=3600, immutable",
+                    "Cache-Control": "public, max-age=60, immutable",
                     "Access-Control-Allow-Origin": "*",
                     "Access-Control-Allow-Headers": "*"
                 }
@@ -219,14 +243,15 @@ class HLSStreamer:
             return web.Response(status=500, text="Gagal membaca segmen.")
 
     async def _handle_index(self, request: web.Request) -> web.Response:
-        html = (
+        safe_url = html.escape(self.public_url)
+        html_page = (
             "<!DOCTYPE html><html><head><title>MeshCast HLS Radio</title></head>"
             "<body style='font-family:sans-serif; background:#121212; color:#fff; text-align:center; padding:50px;'>"
             "<h1>📡 Radio HLS Stream Active</h1>"
-            f"<p>Stream URL: <a style='color:#00e676;' href='{self.public_url}'>{self.public_url}</a></p>"
+            f"<p>Stream URL: <a style='color:#00e676;' href='{safe_url}'>{safe_url}</a></p>"
             "</body></html>"
         )
-        return web.Response(text=html, content_type="text/html", headers={"Access-Control-Allow-Origin": "*"})
+        return web.Response(text=html_page, content_type="text/html", headers={"Access-Control-Allow-Origin": "*"})
 
     def get_hls_stats(self) -> Dict[str, Any]:
         now = time.monotonic()

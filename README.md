@@ -8,6 +8,7 @@ A lightweight desktop audio broadcasting application. Stream music and live micr
 
 - **Dual Audio Sources**: Switch easily between a music library and a live microphone input.
 - **Dual Streaming**: Broadcasts to both WebRTC for real-time streaming and HLS for web browsers.
+- **Legacy AAC Relay**: Optional native Icecast-compatible AAC stream at `/live` for listeners that cannot play Opus/HLS (off by default, enable from the bottom bar).
 - **YouTube Downloader**: Paste a YouTube link to download audio and add it directly to your queue.
 - **Auto-DJ & Queue**: Automatic playback with custom priority queue and shuffle support.
 - **Audio Converter**: Convert MP3, WAV, and FLAC files into streaming-ready Opus audio.
@@ -23,8 +24,15 @@ flowchart LR
     A[Music Library / Microphone] --> B[Audio Engine]
     B --> C[WebRTC Stream]
     B --> D[HLS Web Stream]
-    D --> E[Cloudflare Tunnel]
+    B --> E[AAC /live Legacy Relay]
+    D --> F[Cloudflare Tunnel]
+    E --> F
 ```
+
+The optional legacy relay transcodes the 20ms Opus packets to AAC-LC on the fly
+and serves a continuous Icecast-style stream at `/live`. It works in VLC and any
+traditional radio player. Enable it with the **AAC** button in the bottom bar;
+it is off by default.
 
 ---
 
@@ -78,8 +86,10 @@ Streaming MeshCast/
 ├── src/
 │   ├── config.py        # Settings manager
 │   ├── rtp_pacer.py     # Core audio stream engine
+│   ├── opus_demuxer.py  # Zero-reencode Ogg Opus packet reader
 │   ├── whip_client.py   # WebRTC broadcast client
 │   ├── hls_streamer.py  # HLS HTTP stream server
+│   ├── icecast_server.py # Native AAC/Icecast relay at /live (optional)
 │   ├── audio_capture.py # Microphone input recorder
 │   ├── service_manager.py # Cloudflare tunnel manager
 │   ├── yt_downloader.py # YouTube audio downloader

@@ -13,6 +13,7 @@ from src.config import AppConfig
 from src.rtp_pacer import RawOpusTrack
 from src.whip_client import WHIPClient
 from src.hls_streamer import HLSStreamer
+from src.icecast_server import NativeIcecastServer
 from src.gui import MainWindow
 from src.service_manager import start_cloudflared_tunnel, stop_all_services
 
@@ -41,16 +42,19 @@ async def main_async(cfg: AppConfig, app: QApplication):
         # 1. Initialize pacer engine & track (fast, no blocking disk/network)
         track = RawOpusTrack([])
         whip_client = WHIPClient(cfg.whip_url, track)
+        icecast = NativeIcecastServer(bitrate=128000)
         hls_streamer = HLSStreamer(
             host="127.0.0.1",
             port=cfg.hls_port,
             output_dir="hls_output",
-            public_url=cfg.public_hls_url
+            public_url=cfg.public_hls_url,
+            icecast_server=icecast
         )
         track.add_packet_listener(hls_streamer.enqueue_opus_frame)
+        track.add_packet_listener(icecast.enqueue_opus_frame)
 
         # 2. Show GUI instantly (<100ms)
-        window = MainWindow(track, whip_client, hls_streamer, cfg, music_dir)
+        window = MainWindow(track, whip_client, hls_streamer, cfg, music_dir, icecast=icecast)
         window.show()
         window.log_event("[Main] GUI ready")
 
