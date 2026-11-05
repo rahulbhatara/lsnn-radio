@@ -11,71 +11,88 @@ def convert_audio_with_pyav(input_file: str, output_file: str):
     """
     Converts any audio file to standard 48kHz stereo 20ms Opus using pure PyAV (no external ffmpeg.exe).
     """
-    in_container = av.open(input_file)
-    if not in_container.streams.audio:
-        in_container.close()
-        raise ValueError(f"No audio stream found in {input_file}")
+    in_container = None
+    out_container = None
+    try:
+        in_container = av.open(input_file)
+        if not in_container.streams.audio:
+            raise ValueError(f"No audio stream found in {input_file}")
 
-    in_stream = in_container.streams.audio[0]
+        in_stream = in_container.streams.audio[0]
 
-    out_container = av.open(output_file, 'w', format='ogg')
-    out_stream = out_container.add_stream('libopus', rate=48000)
-    out_stream.layout = 'stereo'
-    out_stream.bit_rate = 192000
+        out_container = av.open(output_file, 'w', format='ogg')
+        out_stream = out_container.add_stream('libopus', rate=48000)
+        out_stream.layout = 'stereo'
+        out_stream.bit_rate = 192000
 
-    resampler = av.AudioResampler(
-        format='s16',
-        layout='stereo',
-        rate=48000
-    )
+        resampler = av.AudioResampler(
+            format='s16',
+            layout='stereo',
+            rate=48000
+        )
 
-    # 960 samples per 20ms at 48000Hz stereo int16 (1920 int16 samples)
-    CHUNK_SIZE = 960
-    pcm_buffer = np.empty((0, 2), dtype=np.int16)
+        # 960 samples per 20ms at 48000Hz stereo int16 (1920 int16 samples)
+        CHUNK_SIZE = 960
+        pcm_buffer = np.empty((0, 2), dtype=np.int16)
 
-    for frame in in_container.decode(in_stream):
-        resampled_frames = resampler.resample(frame)
-        if not resampled_frames:
-            continue
-        for rf in resampled_frames:
-            # Convert PyAV AudioFrame to numpy array (N, 2)
-            nd = rf.to_ndarray()
-            # PyAV returns shape (2, N) for planar or (1, N*2) for packed
-            if nd.ndim == 2 and nd.shape[0] == 2:
-                nd = nd.T  # shape (N, 2)
-            elif nd.ndim == 1:
-                nd = nd.reshape(-1, 2)
+        for frame in in_container.decode(in_stream):
+            resampled_frames = resampler.resample(frame)
+            if not resampled_frames:
+                continue
+            for rf in resampled_frames:
+                nd = rf.to_ndarray().reshape(-1, 2)
+                pcm_buffer = np.vstack([pcm_buffer, nd])
 
-            pcm_buffer = np.vstack([pcm_buffer, nd])
+                # Slice and encode in 960-sample (20ms) chunks
+                while len(pcm_buffer) >= CHUNK_SIZE:
+                    chunk = np.ascontiguousarray(pcm_buffer[:CHUNK_SIZE], dtype=np.int16)
+                    pcm_buffer = pcm_buffer[CHUNK_SIZE:]
 
-            # Slice and encode in 960-sample (20ms) chunks
-            while len(pcm_buffer) >= CHUNK_SIZE:
-                chunk = np.ascontiguousarray(pcm_buffer[:CHUNK_SIZE], dtype=np.int16)
-                pcm_buffer = pcm_buffer[CHUNK_SIZE:]
+                    out_frame = av.AudioFrame.from_ndarray(chunk.reshape(1, -1), format='s16', layout='stereo')
+                    out_frame.sample_rate = 48000
 
-                out_frame = av.AudioFrame.from_ndarray(chunk.T, format='s16', layout='stereo')
-                out_frame.sample_rate = 48000
+                    packets = out_stream.encode(out_frame)
+                    for pkt in packets:
+                        out_container.mux(pkt)
 
-                packets = out_stream.encode(out_frame)
-                for pkt in packets:
-                    out_container.mux(pkt)
+        # Flush remaining buffer if any
+        if len(pcm_buffer) > 0:
+            pad_len = CHUNK_SIZE - len(pcm_buffer)
+            padding = np.zeros((pad_len, 2), dtype=np.int16)
+            chunk = np.ascontiguousarray(np.vstack([pcm_buffer, padding]), dtype=np.int16)
+            out_frame = av.AudioFrame.from_ndarray(chunk.reshape(1, -1), format='s16', layout='stereo')
+            out_frame.sample_rate = 48000
+            for pkt in out_stream.encode(out_frame):
+                out_container.mux(pkt)
 
-    # Flush remaining buffer if any
-    if len(pcm_buffer) > 0:
-        pad_len = CHUNK_SIZE - len(pcm_buffer)
-        padding = np.zeros((pad_len, 2), dtype=np.int16)
-        chunk = np.ascontiguousarray(np.vstack([pcm_buffer, padding]), dtype=np.int16)
-        out_frame = av.AudioFrame.from_ndarray(chunk.T, format='s16', layout='stereo')
-        out_frame.sample_rate = 48000
-        for pkt in out_stream.encode(out_frame):
+        # Flush encoder
+        for pkt in out_stream.encode(None):
             out_container.mux(pkt)
 
-    # Flush encoder
-    for pkt in out_stream.encode(None):
-        out_container.mux(pkt)
-
-    in_container.close()
-    out_container.close()
+    except Exception:
+        if out_container:
+            try:
+                out_container.close()
+            except Exception:
+                pass
+            out_container = None
+        if os.path.exists(output_file):
+            try:
+                os.remove(output_file)
+            except Exception:
+                pass
+        raise
+    finally:
+        if in_container:
+            try:
+                in_container.close()
+            except Exception:
+                pass
+        if out_container:
+            try:
+                out_container.close()
+            except Exception:
+                pass
 
 def convert_audio_to_opus(input_file: str, output_file: str):
     """

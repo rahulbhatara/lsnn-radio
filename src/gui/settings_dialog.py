@@ -169,7 +169,14 @@ class SettingsDialog(QDialog):
             QMessageBox.warning(self, "Invalid Port", "Please enter a valid port number between 1 and 65535.")
             return
 
-        self.config.music_dir = self.txtMusicDir.text().strip() or ".."
+        music_dir = self.txtMusicDir.text().strip() or ".."
+        try:
+            os.makedirs(os.path.abspath(music_dir), exist_ok=True)
+        except Exception as e:
+            QMessageBox.warning(self, "Invalid Music Directory", f"Cannot access music directory:\n{e}")
+            return
+
+        self.config.music_dir = music_dir
         self.config.whip_url = self.txtWhipUrl.text().strip() or "https://cn1.meshcast.io/whip/lsnn_radio"
         self.config.hls_port = port
         self.config.hls_host = self.txtHlsHost.text().strip() or "0.0.0.0"

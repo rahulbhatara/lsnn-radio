@@ -30,7 +30,14 @@ class AppConfig:
             try:
                 with open(file_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+                if isinstance(data, dict):
+                    valid = {k: v for k, v in data.items() if k is not None and v is not None and k in cls.__dataclass_fields__}
+                    if "hls_port" in valid:
+                        try:
+                            valid["hls_port"] = int(valid["hls_port"])
+                        except (ValueError, TypeError):
+                            del valid["hls_port"]
+                    return cls(**valid)
             except Exception as e:
                 print(f"[Config] Error loading {file_path}: {e}")
         
@@ -43,10 +50,17 @@ class AppConfig:
         return cfg
 
     def save(self, file_path: str = CONFIG_FILE) -> bool:
+        tmp_path = f"{file_path}.tmp"
         try:
-            with open(file_path, "w", encoding="utf-8") as f:
+            with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(asdict(self), f, indent=2)
+            os.replace(tmp_path, file_path)
             return True
         except Exception as e:
             print(f"[Config Error] Failed to save {file_path}: {e}")
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
             return False

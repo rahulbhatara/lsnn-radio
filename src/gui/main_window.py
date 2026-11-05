@@ -276,7 +276,7 @@ class MainWindow(QMainWindow):
         self.btnPrev.clicked.connect(self._on_prev_track)
         row.addWidget(self.btnPrev)
 
-        self.btnPlay = QPushButton("Play")
+        self.btnPlay = QPushButton("Pause" if self.track.is_playing else "Play")
         self.btnPlay.setObjectName("btnPlay")
         self.btnPlay.setToolTip("Play / Pause broadcast")
         self.btnPlay.clicked.connect(self._on_toggle_play)
@@ -496,6 +496,7 @@ class MainWindow(QMainWindow):
         self.logTextEdit = QTextEdit()
         self.logTextEdit.setObjectName("logPanel")
         self.logTextEdit.setReadOnly(True)
+        self.logTextEdit.document().setMaximumBlockCount(500)
         self.logTextEdit.setFixedHeight(0)
         self.logTextEdit.setVisible(False)
         vbox.addWidget(self.logTextEdit)
@@ -704,32 +705,41 @@ class MainWindow(QMainWindow):
             def cb(name, cur, tot):
                 self.log_event(f"Converting [{cur}/{tot}]: {name}")
 
-            s, t = await asyncio.to_thread(batch_convert_files, files, cb)
-            self.log_event(f"Conversion complete! Converted {s}/{t} files to Opus.")
-            self.conversion_in_progress = False
-            self.btnConvertNonOpus.setEnabled(True)
-            self.track.refresh_playlist(self.music_dir)
-            self._populate_all_tables()
-            self._check_non_opus_files()
-
-        asyncio.create_task(run_conv())
-
-    def _open_settings_dialog(self):
-        dlg = SettingsDialog(self.config, self)
-        if dlg.exec():
-            # If music directory changed, update it
-            if self.config.music_dir != self.music_dir:
-                self.music_dir = self.config.music_dir
+            try:
+                s, t = await asyncio.to_thread(batch_convert_files, files, cb)
+                self.log_event(f"Conversion complete! Converted {s}/{t} files to Opus.")
                 self.track.refresh_playlist(self.music_dir)
                 self._populate_all_tables()
                 self._check_non_opus_files()
-                self.log_event(f"Config: Music dir set to {self.music_dir}")
+            except Exception as e:
+                self.log_event(f"Conversion failed: {e}")
+            finally:
+                self.conversion_in_progress = False
+                self.btnConvertNonOpus.setEnabled(True)
 
-            # If public HLS URL changed
-            if self.hls_streamer and self.config.public_hls_url:
-                self.hls_streamer.public_url = self.config.public_hls_url
+        asyncio.create_task(run_conv())
 
-            self.log_event("Settings saved")
+    _batch_convert_non_opus = _start_batch_conversion
+
+    def _open_settings_dialog(self):
+        dlg = SettingsDialog(self.config, self)
+        try:
+            if dlg.exec():
+                # If music directory changed, update it
+                if self.config.music_dir != self.music_dir:
+                    self.music_dir = self.config.music_dir
+                    self.track.refresh_playlist(self.music_dir)
+                    self._populate_all_tables()
+                    self._check_non_opus_files()
+                    self.log_event(f"Config: Music dir set to {self.music_dir}")
+
+                # If public HLS URL changed
+                if self.hls_streamer and self.config.public_hls_url:
+                    self.hls_streamer.public_url = self.config.public_hls_url
+
+                self.log_event("Settings saved")
+        finally:
+            dlg.deleteLater()
 
     # ── Table Population ────────────────────────────────────
     def _populate_all_tables(self):

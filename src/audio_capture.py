@@ -53,7 +53,7 @@ class AudioCaptureWorker:
     def __init__(self, device_id: Optional[int] = None, bitrate: int = 192000):
         self.device_id = device_id
         self.bitrate = bitrate
-        self.queue = queue.Queue(maxsize=150)  # ~3 detik buffer audio
+        self.queue = queue.Queue(maxsize=5)  # ~100ms real-time audio buffer
         
         self.stream: Optional[sd.InputStream] = None
         self.codec: Optional[av.CodecContext] = None
@@ -148,13 +148,12 @@ class AudioCaptureWorker:
 
             # Tentukan channel yang didukung perangkat
             input_channels = 2
-            if self.device_id is not None:
-                try:
-                    dev_info = sd.query_devices(self.device_id)
-                    max_in = dev_info.get('max_input_channels', 2)
-                    input_channels = 1 if max_in == 1 else 2
-                except Exception:
-                    input_channels = 2
+            try:
+                dev_info = sd.query_devices(self.device_id, kind='input')
+                max_in = dev_info.get('max_input_channels', 2)
+                input_channels = 1 if max_in == 1 else 2
+            except Exception:
+                input_channels = 2
 
             try:
                 # Buka InputStream PortAudio dengan blocksize 960 (20ms @ 48kHz)
@@ -182,6 +181,14 @@ class AudioCaptureWorker:
                 self.codec = None
                 return False
 
+    def flush(self):
+        """Drain queued audio packets immediately."""
+        while not self.queue.empty():
+            try:
+                self.queue.get_nowait()
+            except Exception:
+                break
+
     def stop(self):
         with self._lock:
             self.is_running = False
@@ -202,11 +209,7 @@ class AudioCaptureWorker:
             self.codec = None
             
             # Bersihkan sisa queue buffer
-            while not self.queue.empty():
-                try:
-                    self.queue.get_nowait()
-                except Exception:
-                    break
+            self.flush()
                     
             self.current_level_db = -60.0
             self.current_level_linear = 0.0

@@ -3,6 +3,7 @@ import glob
 import time
 import random
 import asyncio
+import threading
 from collections import deque
 from typing import Optional, List, Dict, Any
 import av
@@ -49,6 +50,7 @@ class RawOpusTrack(MediaStreamTrack):
         
         self.is_playing = True
         self.is_muted = False
+        self._track_lock = threading.Lock()
         
         self._pts = 0
         self._next_pacing_time = None
@@ -114,34 +116,39 @@ class RawOpusTrack(MediaStreamTrack):
         new_files = [f for f in files if os.path.abspath(f) not in existing_set]
         
         valid_files_set = set(os.path.abspath(f) for f in files)
-        self.library = [f for f in self.library if os.path.abspath(f) in valid_files_set]
-        
-        if new_files:
-            self.library.extend(new_files)
-            if not self.shuffled_pool and self.auto_dj_enabled:
-                self._refill_shuffled_pool()
+        with self._track_lock:
+            self.library = [f for f in self.library if os.path.abspath(f) in valid_files_set]
+            self.shuffled_pool = [f for f in self.shuffled_pool if os.path.abspath(f) in valid_files_set]
+            
+            if new_files:
+                self.library.extend(new_files)
+                if not self.shuffled_pool and self.auto_dj_enabled:
+                    self._refill_shuffled_pool()
 
-        # Bersihkan queue dari file yang sudah tidak ada di disk
-        self.user_queue = [f for f in self.user_queue if os.path.abspath(f) in valid_files_set]
+            # Bersihkan queue dari file yang sudah tidak ada di disk
+            self.user_queue = [f for f in self.user_queue if os.path.abspath(f) in valid_files_set]
+
+            should_start = not self.demuxer and self.library and self.source_mode == "playlist"
 
         # Jika belum ada lagu yang diputar dan mode playlist aktif, mulai putar
-        if not self.demuxer and self.library and self.source_mode == "playlist":
+        if should_start:
             self.next_track()
             
         return len(new_files), len(self.library)
 
     def _load_demuxer(self, track_path: str):
-        self.track_frames_played = 0
-        if self.demuxer:
-            self.demuxer.close()
-            self.demuxer = None
-            
-        if track_path and os.path.exists(track_path):
-            try:
-                self.demuxer = OpusDemuxer(track_path)
-            except Exception as e:
-                print(f"[Pacer Error] Gagal memuat {os.path.basename(track_path)}: {e}")
+        with self._track_lock:
+            self.track_frames_played = 0
+            if self.demuxer:
+                self.demuxer.close()
                 self.demuxer = None
+                
+            if track_path and os.path.exists(track_path):
+                try:
+                    self.demuxer = OpusDemuxer(track_path)
+                except Exception as e:
+                    print(f"[Pacer Error] Gagal memuat {os.path.basename(track_path)}: {e}")
+                    self.demuxer = None
 
     def set_source_mode(self, mode: str) -> str:
         """
@@ -157,6 +164,7 @@ class RawOpusTrack(MediaStreamTrack):
 
         self.source_mode = mode
         if self.source_mode == "mic":
+            self.audio_capture.flush()
             self.audio_capture.start(device_id=self.audio_capture.device_id)
             print("[RawOpusTrack] Berpindah ke Mode: LIVE MICROPHONE (PCM -> 20ms Opus)")
         else:
@@ -183,10 +191,14 @@ class RawOpusTrack(MediaStreamTrack):
 
     def toggle_play(self):
         self.is_playing = not self.is_playing
+        if self.is_playing and self.source_mode == "mic":
+            self.audio_capture.flush()
         return self.is_playing
 
     def toggle_mute(self):
         self.is_muted = not self.is_muted
+        if not self.is_muted and self.source_mode == "mic":
+            self.audio_capture.flush()
         return self.is_muted
 
     def toggle_auto_dj(self, enable: Optional[bool] = None) -> bool:
@@ -225,9 +237,10 @@ class RawOpusTrack(MediaStreamTrack):
             self._load_demuxer(next_path)
         else:
             self.current_track = None
-            if self.demuxer:
-                self.demuxer.close()
-                self.demuxer = None
+            with self._track_lock:
+                if self.demuxer:
+                    self.demuxer.close()
+                    self.demuxer = None
 
     def prev_track(self):
         """Memutar ulang lagu yang sedang aktif dari awal."""
@@ -241,6 +254,10 @@ class RawOpusTrack(MediaStreamTrack):
         self.current_track = track_path
         self.current_source = "direct"
         self._load_demuxer(track_path)
+
+    def play_specific_track(self, track_path: str):
+        """Langsung memutar lagu tertentu dari library."""
+        self.play_track_direct(track_path)
 
     def play_track_at_index(self, index: int):
         """Backward-compatibility: memutar lagu berdasarkan indeks di library."""
@@ -336,11 +353,20 @@ class RawOpusTrack(MediaStreamTrack):
     def get_pacer_stats(self) -> dict:
         now = time.monotonic()
         uptime = max(0.001, now - self.start_time)
+
+        try:
+            sliding_bytes = list(self._sliding_bytes)
+        except RuntimeError:
+            sliding_bytes = []
+        try:
+            pacing_drifts = list(self._pacing_drifts)
+        except RuntimeError:
+            pacing_drifts = []
         
         # Sliding window bitrate (3 detik terakhir)
-        recent_bytes = sum(b for t, b in self._sliding_bytes)
-        recent_frames = len(self._sliding_bytes)
-        window_dur = (self._sliding_bytes[-1][0] - self._sliding_bytes[0][0]) if len(self._sliding_bytes) > 1 else 3.0
+        recent_bytes = sum(b for t, b in sliding_bytes)
+        recent_frames = len(sliding_bytes)
+        window_dur = (sliding_bytes[-1][0] - sliding_bytes[0][0]) if len(sliding_bytes) > 1 else 3.0
         window_dur = max(0.1, window_dur)
         
         instant_bitrate_kbps = (recent_bytes * 8 / window_dur) / 1000.0 if recent_frames > 1 else 0.0
@@ -349,9 +375,9 @@ class RawOpusTrack(MediaStreamTrack):
         avg_bitrate_kbps = (self.total_bytes * 8 / uptime) / 1000.0
         avg_pps = self.total_frames / uptime
         
-        instant_drift = self._pacing_drifts[-1] if self._pacing_drifts else 0.0
-        avg_drift = sum(self._pacing_drifts) / len(self._pacing_drifts) if self._pacing_drifts else 0.0
-        max_drift = max(self._pacing_drifts) if self._pacing_drifts else 0.0
+        instant_drift = pacing_drifts[-1] if pacing_drifts else 0.0
+        avg_drift = sum(pacing_drifts) / len(pacing_drifts) if pacing_drifts else 0.0
+        max_drift = max(pacing_drifts) if pacing_drifts else 0.0
 
         return {
             "uptime_sec": uptime,
@@ -369,7 +395,7 @@ class RawOpusTrack(MediaStreamTrack):
         }
 
     def _record_packet_stats(self, packet: av.Packet, is_silence: bool = False):
-        pkt_len = packet.size if hasattr(packet, 'size') and packet.size is not None else len(packet)
+        pkt_len = packet.size if getattr(packet, 'size', None) is not None else len(bytes(packet))
 
         self.total_frames += 1
         if is_silence:

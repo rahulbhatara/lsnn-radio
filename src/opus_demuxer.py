@@ -19,6 +19,8 @@ class OpusDemuxer:
         
         self.container = av.open(self.file_path)
         if not self.container.streams.audio:
+            self.container.close()
+            self.container = None
             raise ValueError(f"Tidak ada stream audio di file: {self.file_path}")
             
         self.audio_stream = self.container.streams.audio[0]
@@ -35,7 +37,7 @@ class OpusDemuxer:
     def _read_packets(self):
         headers_checked = 0
         for packet in self.container.demux(self.audio_stream):
-            if packet.pts is not None or packet.is_keyframe:
+            if (packet.pts is not None or packet.is_keyframe) and packet.size > 0:
                 # Ogg Opus header (OpusHead & OpusTags) hanya ada di 2-3 paket pertama
                 if headers_checked < 3:
                     raw_bytes = bytes(packet)

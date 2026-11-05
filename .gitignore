@@ -22,13 +22,21 @@ music/
 
 # HLS Stream Output & Temporary Files
 hls_output/
-init.mp4
+init*.mp4
+*.mp4
 *.m4s
+*.m3u8
+*.ts
 *.part
 *.ytdl
 *.temp
 *.tmp
 *.log
+
+# PyInstaller & Build Artifacts
+build/
+dist/
+*.spec
 
 # IDE & OS Metadata
 .vscode/

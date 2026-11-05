@@ -20,7 +20,7 @@ def make_adts_header(payload_length: int) -> bytes:
     b3 = ((0x02 & 0x03) << 6) | ((frame_length >> 11) & 0x03)
     b4 = (frame_length >> 3) & 0xFF
     b5 = ((frame_length & 0x07) << 5) | 0x1F               # fullness 0x7FF (11 bit all-one)
-    b6 = 0x3F
+    b6 = 0xFC
     return bytes((b0, b1, b2, b3, b4, b5, b6))
 
 
@@ -62,6 +62,7 @@ class NativeIcecastServer:
         self._decoder: Optional[av.CodecContext] = None   # libopus decoder
         self._encoder: Optional[av.CodecContext] = None   # AAC-LC encoder
         self._resampler = None                            # s16 -> fltp untuk encoder AAC
+        self._fifo: Optional[av.AudioFifo] = None
 
         # Fan-out buffer & klien
         self._clients: List[Dict[str, Any]] = []
@@ -106,6 +107,7 @@ class NativeIcecastServer:
             self._decoder = dec
             self._encoder = enc
             self._resampler = resampler
+            self._fifo = av.AudioFifo()
             self.enabled = True
             self.start_time = time.monotonic()
             self.transcode_errors = 0
@@ -116,6 +118,7 @@ class NativeIcecastServer:
             self._decoder = None
             self._encoder = None
             self._resampler = None
+            self._fifo = None
             self.enabled = False
             return False
 
@@ -127,6 +130,7 @@ class NativeIcecastServer:
         self._decoder = None
         self._encoder = None
         self._resampler = None
+        self._fifo = None
         self._buffer.clear()
         self._buffer_bytes = 0
         print("[Icecast] Native AAC/Icecast relay DISABLED.")
@@ -140,8 +144,14 @@ class NativeIcecastServer:
             pkt = av.Packet(bytes(raw_opus_bytes))
             for frame in self._decoder.decode(pkt):
                 for rf in self._resampler.resample(frame):
-                    for out_pkt in self._encoder.encode(rf):
-                        self._emit(bytes(out_pkt))
+                    if self._fifo:
+                        self._fifo.write(rf)
+            while self._fifo and self._fifo.samples >= self._encoder.frame_size:
+                f_out = self._fifo.read(self._encoder.frame_size)
+                f_out.sample_rate = self.sample_rate
+                f_out.time_base = self._encoder.time_base
+                for out_pkt in self._encoder.encode(f_out):
+                    self._emit(bytes(out_pkt))
         except Exception as e:
             self.transcode_errors += 1
             now = time.monotonic()
@@ -209,7 +219,7 @@ class NativeIcecastServer:
 
         try:
             # Prime buffer dengan tail terakhir supaya playback mulai instan
-            for data in self._recent_chunks(5):
+            for data in self._recent_chunks(50):
                 try:
                     q.put_nowait(data)
                 except asyncio.QueueFull:
@@ -224,6 +234,9 @@ class NativeIcecastServer:
                         break
                     continue
 
+                if client["dead"] or not self.enabled:
+                    break
+
                 # Coalesce frame 20ms menjadi blok besar (~<=64KB): lebih ramah
                 # proksi/tunnel dan mengurangi syscall per-frame.
                 parts = [first]
@@ -235,7 +248,11 @@ class NativeIcecastServer:
                         break
                     parts.append(nxt)
                     total += len(nxt)
-                await resp.write(b"".join(parts))
+
+                await asyncio.wait_for(resp.write(b"".join(parts)), timeout=5.0)
+
+                if client["dead"] or not self.enabled:
+                    break
         except (ConnectionResetError, ConnectionError):
             pass
         except Exception:

@@ -35,6 +35,7 @@ async def main_async(cfg: AppConfig, app: QApplication):
     whip_client = None
     hls_streamer = None
     track = None
+    icecast = None
     try:
         music_dir = os.path.abspath(cfg.music_dir)
         os.makedirs(music_dir, exist_ok=True)
@@ -131,17 +132,48 @@ async def main_async(cfg: AppConfig, app: QApplication):
     finally:
         print("[Main] Shutting down...")
         if 'startup_task' in locals() and not startup_task.done():
-            startup_task.cancel()
-        if track:
-            track.stop()
+            try:
+                startup_task.cancel()
+            except Exception:
+                pass
         if whip_client:
-            await whip_client.close()
+            try:
+                await whip_client.close()
+            except Exception:
+                pass
         if hls_streamer:
-            await hls_streamer.stop()
-        stop_all_services()
-        set_win_high_precision_timer(False)
+            try:
+                await hls_streamer.stop()
+            except Exception:
+                pass
+        if icecast:
+            try:
+                if hasattr(icecast, "disable"):
+                    icecast.disable()
+                elif hasattr(icecast, "stop"):
+                    res = icecast.stop()
+                    if asyncio.iscoroutine(res):
+                        await res
+            except Exception:
+                pass
+        if track:
+            try:
+                track.stop()
+            except Exception:
+                pass
+        try:
+            stop_all_services()
+        except Exception:
+            pass
+        try:
+            set_win_high_precision_timer(False)
+        except Exception:
+            pass
         if app:
-            app.quit()
+            try:
+                app.quit()
+            except Exception:
+                pass
         print("[Main] Done.")
 
 def main():

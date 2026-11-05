@@ -1,4 +1,5 @@
 import asyncio
+from urllib.parse import urljoin
 import aiohttp
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCConfiguration, RTCIceServer
 
@@ -69,7 +70,8 @@ class WHIPClient:
                     raise RuntimeError(f"Server WHIP menolak koneksi (HTTP {resp.status}): {body}")
 
                 sdp_answer = await resp.text()
-                self.session_url = resp.headers.get("Location")
+                loc = resp.headers.get("Location")
+                self.session_url = urljoin(self.whip_url, loc) if loc else None
 
                 # Pasang SDP Answer dari server
                 answer = RTCSessionDescription(sdp=sdp_answer, type="answer")
@@ -101,11 +103,7 @@ class WHIPClient:
         while not self._closing:
             await asyncio.sleep(1.0)
             pc = self.pc
-            if pc is None:
-                continue
-
-            state = pc.connectionState
-            if state == "failed":
+            if pc is None or pc.connectionState in ("failed", "closed", "disconnected"):
                 try:
                     await self._reconnect()
                     backoff = 1.0

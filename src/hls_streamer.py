@@ -51,9 +51,10 @@ class HLSStreamer:
         self.segments_created = 0
         self.total_bytes_served = 0
         self.http_requests_count = 0
-        self._sliding_bytes = deque()  # (timestamp, byte_len)
+        self._sliding_bytes = deque(maxlen=1000)  # (timestamp, byte_len)
         self._m3u8_cache: Optional[str] = None
         self._m3u8_mtime: float = 0.0
+        self.init_filename: Optional[str] = None
 
     def _prepare_output_dir(self):
         if os.path.exists(self.output_dir):
@@ -70,6 +71,7 @@ class HLSStreamer:
         # Gunakan epoch timestamp sebagai start_number & init filename agar URL segmen unik tiap sesi,
         # mencegah Cloudflare CDN / Browser menyajikan cache segmen lama dari sesi sebelumnya.
         session_id = int(time.time())
+        self.init_filename = f"init_{session_id}.mp4"
         self.container = av.open(
             self.m3u8_file,
             mode="w",
@@ -80,7 +82,7 @@ class HLSStreamer:
                 "hls_segment_type": "fmp4",
                 "hls_flags": "delete_segments+omit_endlist",
                 "start_number": str(session_id),
-                "hls_fmp4_init_filename": f"init_{session_id}.mp4",
+                "hls_fmp4_init_filename": self.init_filename,
             }
         )
         self.audio_stream = self.container.add_stream("opus", rate=48000)
@@ -96,6 +98,19 @@ class HLSStreamer:
             # Catatan: route statis (/live) HARUS didaftarkan sebelum /{filename}
             # karena aiohttp mencocokkan route berurutan.
             app = web.Application()
+
+            async def _handle_options(request: web.Request) -> web.Response:
+                return web.Response(
+                    status=204,
+                    headers={
+                        "Access-Control-Allow-Origin": "*",
+                        "Access-Control-Allow-Methods": "GET, OPTIONS",
+                        "Access-Control-Allow-Headers": "*",
+                        "Access-Control-Max-Age": "86400",
+                    },
+                )
+
+            app.router.add_route("OPTIONS", "/{tail:.*}", _handle_options)
             if self.icecast_server is not None:
                 app.router.add_get("/live", self.icecast_server.handle_request)
             app.router.add_get("/live.m3u8", self._handle_m3u8)
@@ -180,11 +195,26 @@ class HLSStreamer:
             )
         
         try:
-            current_mtime = os.path.getmtime(self.m3u8_file)
-            if self._m3u8_cache is None or current_mtime > self._m3u8_mtime:
-                with open(self.m3u8_file, "r", encoding="utf-8") as f:
-                    self._m3u8_cache = f.read()
-                self._m3u8_mtime = current_mtime
+            try:
+                current_mtime = os.path.getmtime(self.m3u8_file)
+                if self._m3u8_cache is None or current_mtime > self._m3u8_mtime:
+                    with open(self.m3u8_file, "r", encoding="utf-8") as f:
+                        self._m3u8_cache = f.read()
+                    self._m3u8_mtime = current_mtime
+            except OSError:
+                if self._m3u8_cache is None:
+                    return web.Response(
+                        status=503,
+                        text="Playlist belum siap.",
+                        headers={"Retry-After": "1", "Access-Control-Allow-Origin": "*"},
+                    )
+
+            if self._m3u8_cache is None:
+                return web.Response(
+                    status=503,
+                    text="Playlist belum siap.",
+                    headers={"Retry-After": "1", "Access-Control-Allow-Origin": "*"},
+                )
 
             content = self._m3u8_cache
             self.total_bytes_served += len(content)
@@ -215,9 +245,10 @@ class HLSStreamer:
 
         # Fallback: Jika init.mp4 dibuat oleh PyAV/FFmpeg di root working directory
         if not os.path.isfile(file_path):
-            root_fallback = os.path.abspath(filename)
-            if os.path.isfile(root_fallback):
-                file_path = root_fallback
+            if filename == getattr(self, "init_filename", None):
+                root_fallback = os.path.abspath(filename)
+                if os.path.isfile(root_fallback):
+                    file_path = root_fallback
 
         if not os.path.isfile(file_path):
             return web.Response(status=404, text="File segmen tidak ditemukan.")
@@ -297,6 +328,12 @@ class HLSStreamer:
             await self.runner.cleanup()
             self.runner = None
             self.site = None
+
+        if hasattr(self, "init_filename") and self.init_filename and os.path.exists(self.init_filename):
+            try:
+                os.remove(self.init_filename)
+            except Exception:
+                pass
 
         if os.path.exists(self.output_dir):
             try:
